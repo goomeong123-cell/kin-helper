@@ -1,0 +1,1 @@
+{"root":["./electron/claude.ts","./electron/db.ts","./electron/ipc.ts","./electron/main.ts","./electron/naver.ts","./electron/preload.ts","./vite.config.ts"],"version":"5.9.3"}

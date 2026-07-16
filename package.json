@@ -1,0 +1,75 @@
+{
+  "name": "kin-helper",
+  "private": true,
+  "version": "0.2.1",
+  "description": "네이버 지식인 도움 답변 + 자연스러운 제품 노출 도구",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "dist": "vite build && electron-builder --win nsis",
+    "release": "vite build && electron-builder --win nsis --publish always"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9",
+    "node-sqlite3-wasm": "^0.8.31",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
+    "typescript": "^5.7.2",
+    "vite": "^5.4.11",
+    "vite-plugin-electron": "^0.28.8",
+    "vite-plugin-electron-renderer": "^0.14.6"
+  },
+  "build": {
+    "appId": "com.kinhelper.app",
+    "productName": "지식인 헬퍼",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": false,
+      "artifactName": "지식인헬퍼-Setup-${version}.exe"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "goomeong123-cell",
+        "repo": "kin-helper",
+        "releaseType": "release"
+      }
+    ],
+    "asar": true,
+    "extraResources": [
+      {
+        "from": "node_modules/node-sqlite3-wasm/dist",
+        "to": "node-sqlite3-wasm/dist"
+      }
+    ]
+  }
+}

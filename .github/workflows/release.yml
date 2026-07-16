@@ -1,0 +1,33 @@
+name: Release
+
+# vX.Y.Z 형태의 태그를 올리면(또는 Actions 탭에서 수동 실행) 자동으로
+# 빌드하고 GitHub 릴리즈에 설치파일을 업로드합니다. (VM은 그걸 자동 갱신)
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Node 설치
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 의존성 설치
+        run: npm install
+
+      - name: 빌드 + GitHub 릴리즈 발행
+        run: npm run release
+        env:
+          # Actions가 자동 제공하는 토큰 — 별도 토큰/설정 불필요
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
