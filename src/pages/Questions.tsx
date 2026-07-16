@@ -26,6 +26,13 @@ export default function Questions() {
   const [collecting, setCollecting] = useState(false);
   const [promoRatio, setPromoRatio] = useState(20);
   const [genAll, setGenAll] = useState(false);
+  const [auto, setAuto] = useState<{ running: boolean; status: string; count: number; waiting: boolean }>({
+    running: false,
+    status: '대기',
+    count: 0,
+    waiting: false,
+  });
+  const [autoSubmit, setAutoSubmit] = useState(false);
 
   async function loadDrafts() {
     const drafts = await window.api.answers.drafts();
@@ -72,6 +79,35 @@ export default function Questions() {
     return () => window.clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [genAll]);
+
+  // 완전자동 상태 폴링
+  useEffect(() => {
+    const t = window.setInterval(async () => {
+      try {
+        setAuto(await window.api.auto.status());
+      } catch {
+        // ignore
+      }
+    }, 2000);
+    return () => window.clearInterval(t);
+  }, []);
+
+  async function startAuto() {
+    if (!accountId) {
+      toast('등록 계정을 먼저 선택하세요.');
+      return;
+    }
+    const res = await window.api.auto.start({ accountId, submit: autoSubmit });
+    if (!res.ok) toast(res.error || '시작 실패');
+    else {
+      toast('완전자동 시작 — 브라우저가 열립니다');
+      setAuto((a) => ({ ...a, running: true }));
+    }
+  }
+  async function stopAuto() {
+    await window.api.auto.stop();
+    toast('완전자동 중지');
+  }
 
   async function collect() {
     setCollecting(true);
@@ -192,6 +228,61 @@ export default function Questions() {
               </option>
             ))}
           </select>
+        )}
+      </div>
+
+      {/* 완전자동 패널 */}
+      <div className="card">
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 12,
+            flexWrap: 'wrap',
+          }}
+        >
+          <div>
+            <div className="label" style={{ margin: 0 }}>
+              🤖 완전자동
+            </div>
+            <div className="page-sub" style={{ marginTop: 2 }}>
+              지식인을 자동으로 돌며 홍보(키워드 검색)·일상(최신 답변대기) 질문에 사람처럼 답변합니다.
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+            <div className="segmented">
+              <button className={!autoSubmit ? 'active' : ''} onClick={() => setAutoSubmit(false)}>
+                관전(등록 직전 멈춤)
+              </button>
+              <button className={autoSubmit ? 'active' : ''} onClick={() => setAutoSubmit(true)}>
+                등록까지 자동
+              </button>
+            </div>
+            {!auto.running ? (
+              <button className="btn primary" onClick={startAuto}>
+                완전자동 시작
+              </button>
+            ) : (
+              <button className="btn danger" onClick={stopAuto}>
+                중지
+              </button>
+            )}
+          </div>
+        </div>
+        {auto.running && (
+          <div style={{ marginTop: 14, display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span className="dot" style={{ background: 'var(--blue)' }} />
+            <span style={{ fontSize: 14, fontWeight: 600 }}>{auto.status}</span>
+            <span className="muted" style={{ fontSize: 13 }}>
+              · 처리 {auto.count}건
+            </span>
+            {auto.waiting && (
+              <button className="btn sm primary" onClick={() => window.api.auto.next()}>
+                확인했어요 · 다음
+              </button>
+            )}
+          </div>
         )}
       </div>
 

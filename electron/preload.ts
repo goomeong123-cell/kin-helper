@@ -52,6 +52,12 @@ const api = {
     get: (key: string) => ipcRenderer.invoke('settings:get', key),
     set: (key: string, value: string) => ipcRenderer.invoke('settings:set', key, value),
   },
+  auto: {
+    start: (opts: { accountId: number; submit: boolean }) => ipcRenderer.invoke('auto:start', opts),
+    stop: () => ipcRenderer.invoke('auto:stop'),
+    next: () => ipcRenderer.invoke('auto:next'),
+    status: () => ipcRenderer.invoke('auto:status'),
+  },
 };
 
 contextBridge.exposeInMainWorld('api', api);

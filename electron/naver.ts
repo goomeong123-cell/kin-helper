@@ -391,3 +391,153 @@ export async function openLoginWindow(acc: AccountProxy): Promise<void> {
   });
   await win.loadURL('https://nid.naver.com/nidlogin.login');
 }
+
+// ==================== 완전자동 (Autopilot) 브라우저 헬퍼 ====================
+
+const HAS_EDITOR_JS = `
+  (function () {
+    if (document.querySelector('[contenteditable="true"], textarea')) return true;
+    for (const f of document.querySelectorAll('iframe')) {
+      try { const d = f.contentDocument; if (d && (d.querySelector('[contenteditable="true"]') || (d.body && d.body.isContentEditable))) return true; } catch (e) {}
+    }
+    return false;
+  })();
+`;
+
+const SUBMIT_JS = `
+  (function () {
+    const els = Array.from(document.querySelectorAll('button, a, input[type=button], input[type=submit]'));
+    const b = els.find((el) => { const t = (el.innerText || el.value || '').trim(); return t === '등록' || /^답변\\s*등록$/.test(t); });
+    if (b) { b.click(); return true; }
+    return false;
+  })();
+`;
+
+// 사람처럼 한 글자씩 타이핑하는 주입 스크립트
+function typeJS(answer: string): string {
+  return `
+    (async function () {
+      const text = ${JSON.stringify(answer)};
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const rnd = (a, b) => a + Math.floor(Math.random() * (b - a));
+      let ce = document.querySelector('[contenteditable="true"]');
+      let doc = document;
+      if (!ce) {
+        for (const f of document.querySelectorAll('iframe')) {
+          try { const d = f.contentDocument; if (!d) continue; const ice = d.querySelector('[contenteditable="true"]') || (d.body && d.body.isContentEditable ? d.body : null); if (ice) { ce = ice; doc = d; break; } } catch (e) {}
+        }
+      }
+      let ta = null; if (!ce) { ta = document.querySelector('textarea'); }
+      if (!ce && !ta) return false;
+      const typeHuman = async (insertChar, insertNewline) => {
+        let i = 0;
+        for (const ch of text) {
+          if (ch === '\\n') insertNewline(); else insertChar(ch);
+          i++;
+          await sleep(rnd(18, 75));
+          if (/[\\s.,!?~]/.test(ch) && Math.random() < 0.15) await sleep(rnd(120, 340));
+          if (i % rnd(35, 60) === 0) await sleep(rnd(300, 900));
+        }
+      };
+      if (ce) {
+        ce.focus();
+        try { doc.execCommand('selectAll', false, null); doc.execCommand('delete', false, null); } catch (e) {}
+        const insertChar = (c) => { try { doc.execCommand('insertText', false, c); } catch (e) {} ce.dispatchEvent(new Event('input', { bubbles: true })); };
+        const insertNewline = () => { try { doc.execCommand('insertParagraph', false, null); } catch (e) { try { doc.execCommand('insertText', false, '\\n'); } catch (e2) {} } ce.dispatchEvent(new Event('input', { bubbles: true })); };
+        await typeHuman(insertChar, insertNewline);
+        if ((ce.textContent || '').trim().length === 0) {
+          const esc = (s) => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+          ce.innerHTML = text.split('\\n').map((l) => '<p>' + (l ? esc(l) : '<br>') + '</p>').join('');
+          ce.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        return true;
+      }
+      ta.focus(); ta.value = '';
+      const insertChar = (c) => { ta.value += c; ta.dispatchEvent(new Event('input', { bubbles: true })); };
+      const insertNewline = () => { ta.value += '\\n'; ta.dispatchEvent(new Event('input', { bubbles: true })); };
+      await typeHuman(insertChar, insertNewline);
+      return true;
+    })();
+  `;
+}
+
+/** 완전자동용 브라우저 창 (계정 세션·프록시·크롬 UA) */
+export async function openAutoWindow(acc: AccountProxy): Promise<BrowserWindow> {
+  const ses = await getAccountSession(acc);
+  return new BrowserWindow({
+    show: true,
+    width: 1240,
+    height: 920,
+    title: `완전자동 · ${acc.naverId}`,
+    webPreferences: { session: ses },
+  });
+}
+
+/** 목록(키워드→tagDetail, 없으면 kinupList) 열고 사람처럼 스크롤 후 질문 추출 */
+export async function autoScrapeList(
+  win: BrowserWindow,
+  keyword?: string,
+): Promise<CollectedQuestion[]> {
+  const url = keyword
+    ? `https://kin.naver.com/tag/tagDetail.naver?tag=${encodeURIComponent(keyword)}&listType=answer`
+    : 'https://kin.naver.com/qna/kinupList.naver';
+  await win.loadURL(url);
+  await humanDelay(1200, 2400);
+  for (let i = 0; i < 2; i++) {
+    await win.webContents
+      .executeJavaScript(`window.scrollBy(0, ${300 + Math.floor(Math.random() * 400)});`)
+      .catch(() => {});
+    await humanDelay(600, 1400);
+  }
+  const script = `
+    (function () {
+      const out = []; const seen = new Set();
+      const keyOf = (h) => { const m = h.match(/dirId=(\\d+)[\\s\\S]*?docId=(\\d+)/) || h.match(/docId=(\\d+)/); return m ? m.slice(1).join('-') : h; };
+      document.querySelectorAll('li.lst').forEach((li) => {
+        const a = li.querySelector('div.tit a, a.txt'); if (!a) return; const href = a.href || ''; if (!/detail\\.naver/.test(href) || !/docId=/.test(href)) return;
+        const key = keyOf(href); if (seen.has(key)) return; const title = (a.textContent || '').replace(/\\s+/g, ' ').trim(); if (title.length < 4) return;
+        const c = li.querySelector('a.cont'); seen.add(key);
+        out.push({ kinKey: key, title, url: href, content: c ? (c.textContent || '').replace(/\\s+/g, ' ').trim() : '', category: '' });
+      });
+      if (out.length === 0) {
+        document.querySelectorAll('#au_board_list tr').forEach((tr) => {
+          const a = tr.querySelector('td.title a'); if (!a) return; const href = a.href || ''; if (!/detail\\.naver/.test(href) || !/docId=/.test(href)) return;
+          const key = keyOf(href); if (seen.has(key)) return; const title = (a.textContent || '').replace(/\\s+/g, ' ').trim(); if (title.length < 4) return;
+          seen.add(key); out.push({ kinKey: key, title, url: href, content: '', category: '' });
+        });
+      }
+      return out.slice(0, 40);
+    })();
+  `;
+  const r = await win.webContents.executeJavaScript(script).catch(() => []);
+  return Array.isArray(r) ? r : [];
+}
+
+/** 상세로 이동 → 에디터 대기 → 사람처럼 타이핑 → (submit) 등록 클릭 */
+export async function autoOpenAndAnswer(
+  win: BrowserWindow,
+  url: string,
+  answer: string,
+  submit: boolean,
+): Promise<{ typed: boolean; submitted: boolean; error?: string }> {
+  try {
+    await win.loadURL(url);
+    await humanDelay(1500, 3200); // 읽는 시간
+    let hasEditor = false;
+    for (let i = 0; i < 8; i++) {
+      hasEditor = await win.webContents.executeJavaScript(HAS_EDITOR_JS).catch(() => false);
+      if (hasEditor) break;
+      await humanDelay(600, 1100);
+    }
+    if (!hasEditor) return { typed: false, submitted: false, error: '답변칸 없음(로그인/페이지 확인)' };
+    await humanDelay(1200, 2600);
+    const typed = await win.webContents.executeJavaScript(typeJS(answer)).catch(() => false);
+    if (!typed) return { typed: false, submitted: false, error: '입력 실패' };
+    if (!submit) return { typed: true, submitted: false };
+    await humanDelay(1000, 2200);
+    const submitted = await win.webContents.executeJavaScript(SUBMIT_JS).catch(() => false);
+    return { typed: true, submitted: !!submitted };
+  } catch (e: unknown) {
+    return { typed: false, submitted: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}

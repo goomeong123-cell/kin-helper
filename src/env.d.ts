@@ -99,6 +99,12 @@ export interface Api {
     get: (key: string) => Promise<string | null>;
     set: (key: string, value: string) => Promise<boolean>;
   };
+  auto: {
+    start: (opts: { accountId: number; submit: boolean }) => Promise<{ ok: boolean; error?: string }>;
+    stop: () => Promise<boolean>;
+    next: () => Promise<boolean>;
+    status: () => Promise<{ running: boolean; status: string; count: number; waiting: boolean }>;
+  };
 }
 
 declare global {

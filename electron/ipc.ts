@@ -1,4 +1,4 @@
-import type { IpcMain } from 'electron';
+import { BrowserWindow, type IpcMain } from 'electron';
 import { getDb } from './db';
 import { generateAnswer } from './claude';
 import {
@@ -6,6 +6,9 @@ import {
   fetchQuestionDetail,
   openAnswerWindow,
   openLoginWindow,
+  openAutoWindow,
+  autoScrapeList,
+  autoOpenAndAnswer,
   type AccountProxy,
   type PostMode,
 } from './naver';
@@ -413,4 +416,187 @@ export function registerIpc(ipcMain: IpcMain) {
       .run([key, value]);
     return true;
   });
+
+  /* ---------- 완전자동 (Autopilot) ---------- */
+  let autoRunning = false;
+  let autoStop = false;
+  let autoStatus = '대기';
+  let autoCount = 0;
+  let autoWin: BrowserWindow | null = null;
+  let autoNextResolve: (() => void) | null = null;
+
+  const sleepRnd = (a: number, b: number) =>
+    new Promise((r) => setTimeout(r, a + Math.floor(Math.random() * (b - a))));
+
+  ipcMain.handle('auto:status', () => ({
+    running: autoRunning,
+    status: autoStatus,
+    count: autoCount,
+    waiting: !!autoNextResolve,
+  }));
+
+  ipcMain.handle('auto:next', () => {
+    if (autoNextResolve) {
+      const r = autoNextResolve;
+      autoNextResolve = null;
+      r();
+    }
+    return true;
+  });
+
+  ipcMain.handle('auto:stop', () => {
+    autoStop = true;
+    if (autoNextResolve) {
+      const r = autoNextResolve;
+      autoNextResolve = null;
+      r();
+    }
+    if (autoWin && !autoWin.isDestroyed()) {
+      try {
+        autoWin.close();
+      } catch {
+        // ignore
+      }
+    }
+    return true;
+  });
+
+  ipcMain.handle('auto:start', async (_e, opts: { accountId: number; submit: boolean }) => {
+    if (autoRunning) return { ok: false, error: '이미 실행 중입니다.' };
+    const acc = db().prepare('SELECT * FROM accounts WHERE id = ?').get([opts.accountId]) as any;
+    if (!acc) return { ok: false, error: '계정을 찾을 수 없습니다.' };
+    if (!acc.proxy_host || !acc.proxy_port) {
+      return { ok: false, error: '프록시 없는 계정은 완전자동을 실행할 수 없습니다.' };
+    }
+    autoRunning = true;
+    autoStop = false;
+    autoCount = 0;
+    autoStatus = '시작 중…';
+    runAutopilot(opts.accountId, opts.submit)
+      .catch((e) => {
+        autoStatus = '오류: ' + (e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => {
+        autoRunning = false;
+        autoNextResolve = null;
+        if (autoWin && !autoWin.isDestroyed()) {
+          try {
+            autoWin.close();
+          } catch {
+            // ignore
+          }
+        }
+        autoWin = null;
+      });
+    return { ok: true };
+  });
+
+  async function runAutopilot(accountId: number, submit: boolean) {
+    const acc = db().prepare('SELECT * FROM accounts WHERE id = ?').get([accountId]) as any;
+    const proxy = accountToProxy(acc);
+    const ratio = Number(getS('promo_ratio') || '20');
+    const dailyLimit = acc.daily_limit || 5;
+
+    autoWin = await openAutoWindow(proxy);
+    autoWin.on('closed', () => {
+      autoStop = true;
+      autoWin = null;
+    });
+
+    while (!autoStop) {
+      if (!autoWin || autoWin.isDestroyed()) break;
+
+      const today = db()
+        .prepare(
+          "SELECT COUNT(*) n FROM answers WHERE account_id=? AND status='posted' AND date(posted_at)=date('now','localtime')",
+        )
+        .get([accountId]) as any;
+      if ((today?.n || 0) >= dailyLimit) {
+        autoStatus = `하루 한도(${dailyLimit}) 도달 — 종료`;
+        break;
+      }
+
+      // 홍보/일상 결정
+      let keyword: string | undefined;
+      let brandId: number | undefined;
+      const wantPromo = Math.random() * 100 < ratio;
+      if (wantPromo) {
+        const brandsWithPromo = db()
+          .prepare("SELECT * FROM brands WHERE promo_text IS NOT NULL AND promo_text != ''")
+          .all() as any[];
+        if (brandsWithPromo.length) {
+          const b = brandsWithPromo[Math.floor(Math.random() * brandsWithPromo.length)];
+          const kws = db().prepare('SELECT keyword FROM keywords WHERE brand_id=?').all([b.id]) as any[];
+          if (kws.length) {
+            keyword = kws[Math.floor(Math.random() * kws.length)].keyword;
+            brandId = b.id;
+          }
+        }
+      }
+      const isPromo = !!(keyword && brandId);
+      autoStatus = isPromo ? `홍보 질문 찾는 중 (${keyword})…` : '일상 질문 찾는 중…';
+
+      const list = await autoScrapeList(autoWin, keyword);
+      if (autoStop || !autoWin || autoWin.isDestroyed()) break;
+
+      // 아직 우리가 답변 안 한 질문 고르기
+      const fresh = list.find((q) => {
+        const row = db().prepare('SELECT status FROM questions WHERE kin_key=?').get([q.kinKey]) as any;
+        return !row || row.status !== 'answered';
+      });
+      if (!fresh) {
+        autoStatus = '새 질문 없음 — 잠시 대기';
+        await sleepRnd(15000, 30000);
+        continue;
+      }
+
+      db()
+        .prepare(
+          `INSERT OR IGNORE INTO questions (kin_key, title, url, content, category, matched_brand_id, matched_keyword)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run([fresh.kinKey, fresh.title, fresh.url, fresh.content || null, '', brandId ?? null, keyword || null]);
+      const qrow = db().prepare('SELECT * FROM questions WHERE kin_key=?').get([fresh.kinKey]) as any;
+
+      autoStatus = `답변 생성 중: ${fresh.title.slice(0, 24)}`;
+      const gen = (await doGenerate(qrow.id, brandId, isPromo)) as any;
+      if (!gen.ok || !gen.answer) {
+        autoStatus = '생성 실패 — 다음';
+        await sleepRnd(5000, 10000);
+        continue;
+      }
+      if (autoStop || !autoWin || autoWin.isDestroyed()) break;
+
+      autoStatus = '사람처럼 답변 작성 중…';
+      const res = await autoOpenAndAnswer(autoWin, fresh.url, gen.answer.body, submit);
+      if (res.error) {
+        autoStatus = '작성 실패: ' + res.error;
+        await sleepRnd(6000, 12000);
+        continue;
+      }
+
+      if (submit && res.submitted) {
+        db()
+          .prepare("UPDATE answers SET account_id=?, status='posted', mode='auto', posted_at=? WHERE id=?")
+          .run([accountId, new Date().toISOString(), gen.answer.id]);
+        db().prepare("UPDATE questions SET status='answered' WHERE id=?").run([qrow.id]);
+        autoCount++;
+        autoStatus = `등록 완료 (${autoCount}) — 다음까지 대기`;
+        await sleepRnd(90000, 240000); // 사람처럼 1.5~4분 간격
+      } else {
+        // 관전 모드: 등록 직전 멈춤. 사람이 확인 후 [다음]
+        db()
+          .prepare("UPDATE answers SET account_id=?, mode='auto' WHERE id=?")
+          .run([accountId, gen.answer.id]);
+        autoStatus = '등록 대기 — 브라우저에서 확인·등록 후 [다음]을 누르세요';
+        await new Promise<void>((resolve) => {
+          autoNextResolve = resolve;
+        });
+        if (autoStop) break;
+        autoCount++;
+        await sleepRnd(4000, 10000);
+      }
+    }
+    autoStatus = autoStop ? '중지됨' : autoStatus;
+  }
 }
