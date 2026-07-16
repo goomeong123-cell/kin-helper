@@ -98,6 +98,8 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
     if (!res.ok) toast(res.error || '로그인 창 열기 실패');
   }
 
+  const hasProxy = !!(account.proxy_host && account.proxy_port);
+
   if (!edit) {
     return (
       <div className="card">
@@ -108,21 +110,29 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
               <span className={`badge ${STATUS_BADGE[account.status]}`}>
                 {STATUS_LABEL[account.status]}
               </span>
+              {!hasProxy && <span className="badge red">프록시 없음 · 로그인 차단</span>}
             </div>
             <div className="muted" style={{ fontSize: 13 }}>
               프록시:{' '}
-              {account.proxy_host
-                ? `${account.proxy_host}:${account.proxy_port}${account.proxy_user ? ' (인증)' : ''}`
-                : '연결 안 됨'}
+              {hasProxy ? (
+                `${account.proxy_host}:${account.proxy_port}${account.proxy_user ? ' (인증)' : ''}`
+              ) : (
+                <span style={{ color: 'var(--red)' }}>연결 안 됨 (IP 노출 방지로 로그인·등록 불가)</span>
+              )}
               {' · '}일일 한도 {account.daily_limit}건{account.memo ? ` · ${account.memo}` : ''}
             </div>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
-            <button className="btn sm primary" onClick={login}>
+            <button
+              className="btn sm primary"
+              onClick={login}
+              disabled={!hasProxy}
+              title={hasProxy ? '' : '프록시를 먼저 등록해야 로그인할 수 있습니다'}
+            >
               로그인 창
             </button>
             <button className="btn sm" onClick={() => setEdit(true)}>
-              수정
+              {hasProxy ? '수정' : '프록시 등록'}
             </button>
             <button className="btn sm danger" onClick={del}>
               삭제

@@ -1,7 +1,7 @@
 {
   "name": "kin-helper",
   "private": true,
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "네이버 지식인 도움 답변 + 자연스러운 제품 노출 도구",
   "main": "dist-electron/main.js",
   "scripts": {

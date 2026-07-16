@@ -128,6 +128,13 @@ export function registerIpc(ipcMain: IpcMain) {
   ipcMain.handle('accounts:login', async (_e, id: number) => {
     const a = db().prepare('SELECT * FROM accounts WHERE id = ?').get([id]) as any;
     if (!a) return { ok: false, error: '계정을 찾을 수 없습니다.' };
+    // IP 노출 방지: 프록시 없으면 로그인 창을 열지 않음
+    if (!a.proxy_host || !a.proxy_port) {
+      return {
+        ok: false,
+        error: '프록시가 없어 로그인 창을 열지 않았습니다. 실제 IP 노출을 막기 위해 먼저 프록시를 등록하세요.',
+      };
+    }
     await openLoginWindow(accountToProxy(a));
     return { ok: true };
   });
@@ -286,6 +293,13 @@ export function registerIpc(ipcMain: IpcMain) {
       const q = db().prepare('SELECT * FROM questions WHERE id = ?').get([a.question_id]) as any;
       const acc = db().prepare('SELECT * FROM accounts WHERE id = ?').get([opts.accountId]) as any;
       if (!q || !acc) return { ok: false, error: '질문 또는 계정 정보를 찾을 수 없습니다.' };
+      // IP 노출 방지: 프록시 없으면 등록 창을 열지 않음
+      if (!acc.proxy_host || !acc.proxy_port) {
+        return {
+          ok: false,
+          error: '이 계정에 프록시가 없어 등록 창을 열지 않았습니다. 실제 IP 노출을 막기 위해 먼저 프록시를 등록하세요.',
+        };
+      }
 
       const result = await openAnswerWindow({
         account: accountToProxy(acc),
