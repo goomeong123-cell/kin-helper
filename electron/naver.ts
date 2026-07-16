@@ -23,6 +23,10 @@ export interface AccountProxy {
 
 const QUESTION_LIST_URL = 'https://kin.naver.com/qna/questionList.naver';
 
+// 네이버에 "일반 크롬"으로 보이도록 위장하는 User-Agent (Electron/앱 흔적 제거)
+const CHROME_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+
 // 계정별 프록시 인증 정보 (login 이벤트에서 사용)
 const proxyCredById = new Map<number, { user: string; pass: string }>();
 
@@ -53,6 +57,7 @@ async function getAccountSession(acc: AccountProxy) {
   } else {
     await ses.setProxy({ proxyRules: 'direct://' });
   }
+  ses.setUserAgent(CHROME_UA); // 크롬으로 위장
   return ses;
 }
 
@@ -82,6 +87,7 @@ export async function collectQuestions(opts: {
   const ses = opts.account
     ? await getAccountSession(opts.account)
     : session.fromPartition('persist:kin-collect');
+  if (!opts.account) ses.setUserAgent(CHROME_UA); // 수집 세션도 크롬으로 위장
 
   const win = new BrowserWindow({
     show: false,
@@ -259,37 +265,73 @@ export async function openAnswerWindow(opts: {
       .catch(() => {});
     await humanDelay(1200, 2200);
 
-    // semi/auto: 에디터에 본문 주입. 지식인 답변칸 = iframe 내부 body[contenteditable] (SmartEditor).
+    // semi/auto: 에디터에 본문을 "사람처럼 한 글자씩" 입력.
+    // 지식인 답변칸 = iframe 내부 body[contenteditable] (SmartEditor).
+    // 한 번에 붙여넣지 않고, 랜덤 간격으로 타이핑하며 중간중간 생각하는 듯 쉼.
     const injected = await win.webContents
       .executeJavaScript(
         `
-        (function () {
+        (async function () {
           const text = ${JSON.stringify(opts.answer)};
-          const esc = (s) => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-          const html = text.split('\\n').map((l) => '<p>' + (l ? esc(l) : '<br>') + '</p>').join('');
-          const fillCE = (ce) => {
-            ce.focus();
-            try { ce.innerHTML = html; } catch (e) { ce.textContent = text; }
-            ce.dispatchEvent(new Event('input', { bubbles: true }));
-            ce.dispatchEvent(new Event('keyup', { bubbles: true }));
-            return true;
-          };
-          // 1) 최상위 문서 contenteditable
-          const topCE = document.querySelector('[contenteditable="true"]');
-          if (topCE) return fillCE(topCE) ? 'top-ce' : false;
-          // 2) 같은 출처 iframe 내부 contenteditable body (SmartEditor)
-          for (const f of document.querySelectorAll('iframe')) {
-            try {
-              const d = f.contentDocument;
-              if (!d) continue;
-              const ice = d.querySelector('[contenteditable="true"]') || (d.body && d.body.isContentEditable ? d.body : null);
-              if (ice) return fillCE(ice) ? 'iframe-ce' : false;
-            } catch (e) {}
+          const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+          const rnd = (a, b) => a + Math.floor(Math.random() * (b - a));
+
+          // 에디터 찾기: 최상위 CE → iframe 내부 CE → textarea
+          let ce = document.querySelector('[contenteditable="true"]');
+          let doc = document;
+          if (!ce) {
+            for (const f of document.querySelectorAll('iframe')) {
+              try {
+                const d = f.contentDocument;
+                if (!d) continue;
+                const ice = d.querySelector('[contenteditable="true"]') || (d.body && d.body.isContentEditable ? d.body : null);
+                if (ice) { ce = ice; doc = d; break; }
+              } catch (e) {}
+            }
           }
-          // 3) textarea 폴백
-          const ta = document.querySelector('textarea');
-          if (ta) { ta.focus(); ta.value = text; ta.dispatchEvent(new Event('input', { bubbles: true })); return 'textarea'; }
-          return false;
+          let ta = null;
+          if (!ce) { ta = document.querySelector('textarea'); }
+          if (!ce && !ta) return false;
+
+          // 사람처럼 한 글자씩 타이핑
+          const typeHuman = async (insertChar, insertNewline) => {
+            let i = 0;
+            for (const ch of text) {
+              if (ch === '\\n') insertNewline();
+              else insertChar(ch);
+              i++;
+              // 기본 타이핑 간격
+              await sleep(rnd(18, 75));
+              // 공백/문장부호 뒤 가끔 살짝 멈칫
+              if (/[\\s.,!?~]/.test(ch) && Math.random() < 0.15) await sleep(rnd(120, 340));
+              // 가끔(문장 길이쯤) 생각하는 듯 쉼
+              if (i % rnd(35, 60) === 0) await sleep(rnd(300, 900));
+            }
+          };
+
+          if (ce) {
+            ce.focus();
+            // 기존 내용 비우기
+            try { doc.execCommand('selectAll', false, null); doc.execCommand('delete', false, null); } catch (e) {}
+            const insertChar = (c) => { try { doc.execCommand('insertText', false, c); } catch (e) {} ce.dispatchEvent(new Event('input', { bubbles: true })); };
+            const insertNewline = () => { try { doc.execCommand('insertParagraph', false, null); } catch (e) { try { doc.execCommand('insertText', false, '\\n'); } catch (e2) {} } ce.dispatchEvent(new Event('input', { bubbles: true })); };
+            await typeHuman(insertChar, insertNewline);
+            // 타이핑이 전혀 안 먹었으면(빈 상태) innerHTML 폴백
+            if ((ce.textContent || '').trim().length === 0) {
+              const esc = (s) => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+              ce.innerHTML = text.split('\\n').map((l) => '<p>' + (l ? esc(l) : '<br>') + '</p>').join('');
+              ce.dispatchEvent(new Event('input', { bubbles: true }));
+            }
+            return 'typed-ce';
+          }
+
+          // textarea 폴백: 값에 한 글자씩 추가
+          ta.focus();
+          ta.value = '';
+          const insertChar = (c) => { ta.value += c; ta.dispatchEvent(new Event('input', { bubbles: true })); };
+          const insertNewline = () => { ta.value += '\\n'; ta.dispatchEvent(new Event('input', { bubbles: true })); };
+          await typeHuman(insertChar, insertNewline);
+          return 'typed-textarea';
         })();
       `,
       )
