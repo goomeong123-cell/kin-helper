@@ -86,8 +86,19 @@ export function registerIpc(ipcMain: IpcMain) {
     db().prepare('SELECT * FROM accounts ORDER BY created_at ASC').all(),
   );
   ipcMain.handle('accounts:create', (_e, naverId: string) => {
-    const info = db().prepare('INSERT INTO accounts (naver_id) VALUES (?)').run([naverId.trim()]);
-    return db().prepare('SELECT * FROM accounts WHERE id = ?').get([info.lastInsertRowid]);
+    const id = (naverId || '').trim();
+    if (!id) return { ok: false, error: '네이버 ID를 입력하세요.' };
+    const dup = db().prepare('SELECT id FROM accounts WHERE naver_id = ?').get([id]);
+    if (dup) return { ok: false, error: '이미 등록된 ID입니다.' };
+    try {
+      const info = db().prepare('INSERT INTO accounts (naver_id) VALUES (?)').run([id]);
+      const account = db()
+        .prepare('SELECT * FROM accounts WHERE id = ?')
+        .get([info.lastInsertRowid]);
+      return { ok: true, account };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : '계정 추가에 실패했습니다.' };
+    }
   });
   ipcMain.handle('accounts:update', (_e, id: number, fields: Record<string, any>) => {
     const cur = db().prepare('SELECT * FROM accounts WHERE id = ?').get([id]) as any;

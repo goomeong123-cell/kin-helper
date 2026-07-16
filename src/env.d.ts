@@ -74,7 +74,7 @@ export interface Api {
   };
   accounts: {
     list: () => Promise<Account[]>;
-    create: (naverId: string) => Promise<Account>;
+    create: (naverId: string) => Promise<{ ok: boolean; account?: Account; error?: string }>;
     update: (id: number, fields: Record<string, unknown>) => Promise<Account>;
     remove: (id: number) => Promise<boolean>;
     login: (id: number) => Promise<{ ok: boolean; error?: string }>;

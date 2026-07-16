@@ -26,11 +26,23 @@ export default function Accounts() {
   }, []);
 
   async function add() {
-    if (!newId.trim()) return;
-    await window.api.accounts.create(newId.trim());
-    setNewId('');
-    load();
-    toast('계정 추가');
+    const id = newId.trim();
+    if (!id) {
+      toast('네이버 ID를 입력하세요.');
+      return;
+    }
+    try {
+      const res = await window.api.accounts.create(id);
+      if (!res.ok) {
+        toast(res.error || '계정 추가 실패');
+        return;
+      }
+      setNewId('');
+      await load();
+      toast('계정 추가됨');
+    } catch (e) {
+      toast('계정 추가 중 오류: ' + (e instanceof Error ? e.message : String(e)));
+    }
   }
 
   return (
