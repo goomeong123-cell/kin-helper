@@ -100,11 +100,17 @@ if (!gotTheLock) {
   });
 
   app.whenReady().then(() => {
+    // IPC 핸들러는 DB 상태와 무관하게 항상 먼저 등록한다.
+    // (initDb 실패로 등록이 건너뛰어지면 'No handler registered' 오류로 모든 버튼이 죽음)
     try {
-      initDb();
       registerIpc(ipcMain);
     } catch (e) {
-      console.error('[main] init error:', e);
+      console.error('[main] registerIpc error:', e);
+    }
+    try {
+      initDb();
+    } catch (e) {
+      console.error('[main] initDb error:', e);
     }
     createWindow();
     setupAutoUpdate();

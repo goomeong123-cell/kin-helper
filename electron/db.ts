@@ -50,6 +50,16 @@ export function initDb() {
   const dbPath = path.join(userData, 'kinhelper.db');
   const lockPath = dbPath + '.lock';
 
+  // 이전 비정상 종료로 남은 잠금(파일 또는 디렉터리)을 미리 정리
+  const clearLock = () => {
+    try {
+      if (fs.existsSync(lockPath)) fs.rmSync(lockPath, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  };
+  clearLock();
+
   let opened: Database | null = null;
   for (let i = 0; i < 10; i++) {
     opened = tryOpen(dbPath);
@@ -58,11 +68,7 @@ export function initDb() {
   }
 
   if (!opened) {
-    try {
-      if (fs.existsSync(lockPath)) fs.unlinkSync(lockPath);
-    } catch {
-      // ignore
-    }
+    clearLock();
     sleep(200);
     opened = tryOpen(dbPath);
   }
