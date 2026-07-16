@@ -19,10 +19,20 @@ export default function Questions() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [activeBrand, setActiveBrand] = useState<number | 'all'>('all');
   const [questions, setQuestions] = useState<Question[]>([]);
+  // 질문별 최신 초안 — DB에서 로드하므로 탭을 옮겼다 와도 유지됨
+  const [answersByQ, setAnswersByQ] = useState<Record<number, Answer>>({});
   const [mode, setMode] = useState<PostMode>('manual');
   const [accountId, setAccountId] = useState<number | null>(null);
   const [collecting, setCollecting] = useState(false);
   const [promoRatio, setPromoRatio] = useState(20);
+  const [genAll, setGenAll] = useState(false);
+
+  async function loadDrafts() {
+    const drafts = await window.api.answers.drafts();
+    const map: Record<number, Answer> = {};
+    for (const d of drafts) map[d.question_id] = d;
+    setAnswersByQ(map);
+  }
 
   async function refresh() {
     const b = await window.api.brands.list();
@@ -37,12 +47,31 @@ export default function Questions() {
       brandId: activeBrand === 'all' ? undefined : activeBrand,
     });
     setQuestions(qs);
+    await loadDrafts();
+    // 전체 생성이 돌고 있으면(탭 이동 후 복귀) 진행 상태를 이어받음
+    const st = await window.api.answers.generateAllStatus();
+    setGenAll(st.running);
   }
 
   useEffect(() => {
     refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeBrand]);
+
+  // 전체 생성 진행 중엔 주기적으로 초안을 갱신 (진행 상황이 보이게)
+  useEffect(() => {
+    if (!genAll) return;
+    const t = window.setInterval(async () => {
+      await loadDrafts();
+      const st = await window.api.answers.generateAllStatus();
+      if (!st.running) {
+        setGenAll(false);
+        toast('전체 답변 생성 완료');
+      }
+    }, 3000);
+    return () => window.clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [genAll]);
 
   async function collect() {
     setCollecting(true);
@@ -58,10 +87,32 @@ export default function Questions() {
     }
   }
 
+  function generateAll() {
+    const targets = questions.filter((q) => !answersByQ[q.id]);
+    if (targets.length === 0) {
+      toast('이미 모든 질문에 답변 초안이 있습니다.');
+      return;
+    }
+    setGenAll(true);
+    toast(`${targets.length}건 답변 생성 시작 (탭 옮겨도 계속됩니다)`);
+    // await 하지 않음 — 메인 프로세스에서 계속 도므로 탭을 옮겨도 진행됨
+    window.api.answers
+      .generateAll(questions.map((q) => q.id))
+      .then(async (res) => {
+        await loadDrafts();
+        setGenAll(false);
+        if (!res.ok) toast(res.error || '전체 생성 실패');
+        else toast(`전체 생성 완료 · 성공 ${res.done} / 실패 ${res.failed}`);
+      })
+      .catch(() => setGenAll(false));
+  }
+
   async function skip(q: Question) {
     await window.api.questions.setStatus(q.id, 'skipped');
     setQuestions((prev) => prev.filter((x) => x.id !== q.id));
   }
+
+  const pending = questions.filter((q) => !answersByQ[q.id]).length;
 
   return (
     <>
@@ -83,14 +134,23 @@ export default function Questions() {
               </button>
             ))}
           </div>
-          <button className="btn primary" onClick={collect} disabled={collecting}>
+          <button className="btn" onClick={collect} disabled={collecting}>
             {collecting ? <span className="spinner" /> : '질문 수집'}
+          </button>
+          <button
+            className="btn primary"
+            onClick={generateAll}
+            disabled={genAll || questions.length === 0}
+            title="답변이 없는 질문 전체에 답변을 생성합니다"
+          >
+            {genAll ? <span className="spinner" /> : `전체 답변 생성${pending ? ` (${pending})` : ''}`}
           </button>
         </div>
       </div>
 
       <div style={{ marginBottom: 6 }} className="page-sub">
         등록 모드: <b>{MODE_LABEL[mode]}</b> · {MODE_HINT[mode]}
+        {genAll && ' · 전체 생성 진행 중… (다른 탭 가도 계속됩니다)'}
       </div>
 
       {/* 브랜드 탭 */}
@@ -128,7 +188,7 @@ export default function Questions() {
           >
             {accounts.map((a) => (
               <option key={a.id} value={a.id}>
-                {a.naver_id} {a.proxy_host ? `· ${a.proxy_host}` : '· 프록시 없음'}
+                {a.naver_id} {a.proxy_host ? `· ${a.proxy_host}` : '· 프록시 없음(등록 불가)'}
               </option>
             ))}
           </select>
@@ -151,6 +211,8 @@ export default function Questions() {
               mode={mode}
               accountId={accountId}
               promoRatio={promoRatio}
+              answer={answersByQ[q.id]}
+              onGenerated={(a) => setAnswersByQ((prev) => ({ ...prev, [q.id]: a }))}
               onSkip={() => skip(q)}
               onAnswered={() => setQuestions((prev) => prev.filter((x) => x.id !== q.id))}
             />
@@ -167,6 +229,8 @@ function QuestionCard({
   mode,
   accountId,
   promoRatio,
+  answer,
+  onGenerated,
   onSkip,
   onAnswered,
 }: {
@@ -175,24 +239,30 @@ function QuestionCard({
   mode: PostMode;
   accountId: number | null;
   promoRatio: number;
+  answer?: Answer;
+  onGenerated: (a: Answer) => void;
   onSkip: () => void;
   onAnswered: () => void;
 }) {
   const toast = useToast();
-  const [answer, setAnswer] = useState<Answer | null>(null);
-  const [body, setBody] = useState('');
+  const [body, setBody] = useState(answer?.body ?? '');
   const [busy, setBusy] = useState(false);
   const [brandId, setBrandId] = useState<number | null>(q.matched_brand_id);
 
   const brand = brands.find((b) => b.id === brandId) || null;
   const brandHasPromo = !!brand?.promo_text;
 
-  // 비율에 따라 이 질문의 홍보 포함 기본값을 한 번 결정 (질문 카드마다 랜덤 → 전체적으로 비율 수렴)
+  // 비율에 따라 이 질문의 홍보 포함 기본값 결정 (질문마다 랜덤 → 전체적으로 비율 수렴)
   const [includePromo, setIncludePromo] = useState(false);
   useEffect(() => {
     if (brandHasPromo) setIncludePromo(Math.random() * 100 < promoRatio);
     else setIncludePromo(false);
   }, [brandId, brandHasPromo, promoRatio]);
+
+  // 초안이 (전체 생성 등으로) 새로 들어오면 본문 동기화
+  useEffect(() => {
+    if (answer) setBody(answer.body);
+  }, [answer?.id]);
 
   async function generate() {
     setBusy(true);
@@ -206,7 +276,7 @@ function QuestionCard({
         toast(res.error || '생성 실패');
         return;
       }
-      setAnswer(res.answer);
+      onGenerated(res.answer);
       setBody(res.answer.body);
     } finally {
       setBusy(false);
@@ -221,7 +291,6 @@ function QuestionCard({
     }
     setBusy(true);
     try {
-      // 수정본 저장
       if (body !== answer.body) await window.api.answers.updateBody(answer.id, body);
       const res = await window.api.answers.post({ answerId: answer.id, accountId, mode });
       if (!res.ok) {
@@ -252,6 +321,7 @@ function QuestionCard({
       <div className="q-meta">
         <span className="badge">지식인</span>
         {q.matched_keyword && <span className="badge blue">{q.matched_keyword}</span>}
+        {answer && <span className="badge green">답변 준비됨</span>}
         <a href={q.url} target="_blank" rel="noreferrer" className="muted">
           원문 보기 ↗
         </a>
@@ -276,7 +346,7 @@ function QuestionCard({
             <button
               className={`btn sm ${includePromo ? 'primary' : 'ghost'}`}
               onClick={() => setIncludePromo((v) => !v)}
-              title="이 답변에 제품 홍보를 섞을지 여부 (설정의 홍보 비율로 기본값 결정)"
+              title="이 답변에 제품 홍보를 섞을지 (설정의 홍보 비율로 기본값 결정)"
             >
               {includePromo ? '✓ 제품 홍보 포함' : '제품 홍보 끔'}
             </button>
@@ -298,9 +368,13 @@ function QuestionCard({
           />
           {answer.promo_included ? (
             <span className="badge amber" style={{ alignSelf: 'flex-start' }}>
-              제품 노출 포함 가능
+              제품 노출 포함
             </span>
-          ) : null}
+          ) : (
+            <span className="badge" style={{ alignSelf: 'flex-start' }}>
+              일상글 (홍보 없음)
+            </span>
+          )}
           <div className="q-actions">
             <button className="btn primary" onClick={post} disabled={busy}>
               {busy ? <span className="spinner" /> : `${MODE_LABEL[mode]}로 등록`}

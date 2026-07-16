@@ -205,59 +205,111 @@ export function registerIpc(ipcMain: IpcMain) {
   });
 
   /* ---------- 답변 생성 (Claude) ---------- */
+  const getS = (k: string) =>
+    (db().prepare('SELECT value FROM settings WHERE key = ?').get([k]) as any)?.value || '';
+
+  // 질문 하나에 대한 답변 초안 생성 (단건/전체 공용)
+  async function doGenerate(questionId: number, brandArg?: number, includePromo?: boolean) {
+    const q = db().prepare('SELECT * FROM questions WHERE id = ?').get([questionId]) as any;
+    if (!q) return { ok: false, error: '질문을 찾을 수 없습니다.' };
+
+    const brandId = brandArg ?? q.matched_brand_id;
+    let brand: any = null;
+    if (brandId) brand = db().prepare('SELECT * FROM brands WHERE id = ?').get([brandId]);
+
+    // 홍보 포함이 켜져 있고 브랜드에 홍보문구가 있을 때만 홍보 모드
+    const usePromo = !!(includePromo && brand?.promo_text);
+    let promoText: string | undefined;
+    let systemPrompt: string;
+    if (usePromo) {
+      promoText = brand.promo_text;
+      systemPrompt = getS('promo_prompt') || DEFAULT_PROMO_PROMPT;
+    } else {
+      // 일상글: 공통 일상 프롬프트 (구버전 global_prompt 값도 호환)
+      systemPrompt = getS('daily_prompt') || getS('global_prompt') || DEFAULT_DAILY_PROMPT;
+    }
+
+    // 상세 페이지에서 질문 전체 본문을 읽어 답변 품질을 높임 (목록 스니펫은 잘림)
+    let questionTitle = q.title;
+    let questionBody = q.content || '';
+    try {
+      const detail = await fetchQuestionDetail(q.url);
+      if (detail.title) questionTitle = detail.title;
+      if (detail.body && detail.body.length > questionBody.length) questionBody = detail.body;
+    } catch {
+      // 상세 로딩 실패 시 목록 스니펫으로 진행
+    }
+
+    const result = await generateAnswer({ systemPrompt, questionTitle, questionBody, promoText });
+    if (!result.ok) return result;
+
+    const info = db()
+      .prepare(
+        `INSERT INTO answers (question_id, brand_id, body, promo_included, mode, status)
+         VALUES (?, ?, ?, ?, 'manual', 'draft')`,
+      )
+      .run([questionId, brandId ?? null, result.text, promoText ? 1 : 0]);
+    const answer = db().prepare('SELECT * FROM answers WHERE id = ?').get([info.lastInsertRowid]);
+    return { ok: true, answer };
+  }
+
   ipcMain.handle(
     'answers:generate',
-    async (_e, opts: { questionId: number; brandId?: number; includePromo?: boolean }) => {
-      const q = db().prepare('SELECT * FROM questions WHERE id = ?').get([opts.questionId]) as any;
-      if (!q) return { ok: false, error: '질문을 찾을 수 없습니다.' };
+    (_e, opts: { questionId: number; brandId?: number; includePromo?: boolean }) =>
+      doGenerate(opts.questionId, opts.brandId, opts.includePromo),
+  );
 
-      const getS = (k: string) =>
-        (db().prepare('SELECT value FROM settings WHERE key = ?').get([k]) as any)?.value || '';
-
-      const brandId = opts.brandId ?? q.matched_brand_id;
-      let brand: any = null;
-      if (brandId) brand = db().prepare('SELECT * FROM brands WHERE id = ?').get([brandId]);
-
-      // 홍보 포함이 켜져 있고 브랜드에 홍보문구가 있을 때만 홍보 모드
-      const usePromo = !!(opts.includePromo && brand?.promo_text);
-      let promoText: string | undefined;
-      let systemPrompt: string;
-      if (usePromo) {
-        promoText = brand.promo_text;
-        systemPrompt = getS('promo_prompt') || DEFAULT_PROMO_PROMPT;
-      } else {
-        // 일상글: 공통 일상 프롬프트 (구버전 global_prompt 값도 호환)
-        systemPrompt = getS('daily_prompt') || getS('global_prompt') || DEFAULT_DAILY_PROMPT;
+  // 전체 답변 생성 — 메인 프로세스에서 순차 진행하므로 탭을 옮겨도 멈추지 않음.
+  // 홍보 포함 여부는 홍보 비율(promo_ratio)로 자동 결정. 이미 초안 있으면 건너뜀.
+  let generatingAll = false;
+  ipcMain.handle('answers:generateAll', async (_e, questionIds: number[]) => {
+    if (generatingAll) return { ok: false, error: '이미 전체 생성이 진행 중입니다.' };
+    generatingAll = true;
+    const ratio = Number(getS('promo_ratio') || '20');
+    let done = 0;
+    let failed = 0;
+    try {
+      for (const qid of questionIds) {
+        const existing = db()
+          .prepare("SELECT id FROM answers WHERE question_id = ? AND status='draft' LIMIT 1")
+          .get([qid]);
+        if (existing) {
+          done++;
+          continue;
+        }
+        const q = db().prepare('SELECT * FROM questions WHERE id = ?').get([qid]) as any;
+        if (!q) {
+          failed++;
+          continue;
+        }
+        let includePromo = false;
+        if (q.matched_brand_id) {
+          const b = db()
+            .prepare('SELECT promo_text FROM brands WHERE id = ?')
+            .get([q.matched_brand_id]) as any;
+          if (b?.promo_text) includePromo = Math.random() * 100 < ratio;
+        }
+        const r = await doGenerate(qid, q.matched_brand_id ?? undefined, includePromo);
+        if (r.ok) done++;
+        else failed++;
       }
+    } finally {
+      generatingAll = false;
+    }
+    return { ok: true, done, failed };
+  });
 
-      // 상세 페이지에서 질문 전체 본문을 읽어 답변 품질을 높임 (목록 스니펫은 잘림)
-      let questionTitle = q.title;
-      let questionBody = q.content || '';
-      try {
-        const detail = await fetchQuestionDetail(q.url);
-        if (detail.title) questionTitle = detail.title;
-        if (detail.body && detail.body.length > questionBody.length) questionBody = detail.body;
-      } catch {
-        // 상세 로딩 실패 시 목록 스니펫으로 진행
-      }
+  ipcMain.handle('answers:generateAllStatus', () => ({ running: generatingAll }));
 
-      const result = await generateAnswer({
-        systemPrompt,
-        questionTitle,
-        questionBody,
-        promoText,
-      });
-      if (!result.ok) return result;
-
-      const info = db()
-        .prepare(
-          `INSERT INTO answers (question_id, brand_id, body, promo_included, mode, status)
-           VALUES (?, ?, ?, ?, 'manual', 'draft')`,
-        )
-        .run([opts.questionId, brandId ?? null, result.text, promoText ? 1 : 0]);
-      const answer = db().prepare('SELECT * FROM answers WHERE id = ?').get([info.lastInsertRowid]);
-      return { ok: true, answer };
-    },
+  // 각 질문의 최신 초안 (탭 이동 후에도 답변이 유지되도록 로드용)
+  ipcMain.handle('answers:drafts', () =>
+    db()
+      .prepare(
+        `SELECT a.* FROM answers a
+         JOIN (SELECT question_id, MAX(id) AS mid FROM answers WHERE status='draft' GROUP BY question_id) m
+           ON a.id = m.mid`,
+      )
+      .all(),
   );
 
   ipcMain.handle('answers:listForQuestion', (_e, questionId: number) =>

@@ -244,26 +244,33 @@ export async function openAnswerWindow(opts: {
       return { ok: true, needsHuman: true };
     }
 
-    // 에디터가 아직 안 열려 있으면 "답변하기/답변 쓰기" 버튼을 눌러 연다.
-    await win.webContents
-      .executeJavaScript(
-        `
-        (function () {
-          const hasCE = () => {
-            if (document.querySelector('[contenteditable="true"]')) return true;
-            for (const f of document.querySelectorAll('iframe')) {
-              try { if (f.contentDocument && (f.contentDocument.querySelector('[contenteditable="true"]') || (f.contentDocument.body && f.contentDocument.body.isContentEditable))) return true; } catch(e){}
-            }
-            return false;
-          };
-          if (hasCE()) return;
-          const b = Array.from(document.querySelectorAll('a, button')).find((el) => /답변\\s*하기|답변\\s*쓰기|답변\\s*등록하기/.test((el.innerText || '').trim()));
-          if (b) b.click();
-        })();
-      `,
-      )
-      .catch(() => {});
-    await humanDelay(1200, 2200);
+    // 답변칸(에디터)이 나타날 때까지 대기.
+    // 주의: 상단 메뉴 "답변하기"를 클릭하면 질문 선택 화면으로 이동해버리므로 절대 클릭하지 않는다.
+    // 로그인된 상세 페이지에는 답변 에디터가 인라인으로 이미 있으므로 기다리기만 하면 됨.
+    const hasEditorScript = `
+      (function () {
+        if (document.querySelector('[contenteditable="true"], textarea')) return true;
+        for (const f of document.querySelectorAll('iframe')) {
+          try { const d = f.contentDocument; if (d && (d.querySelector('[contenteditable="true"]') || (d.body && d.body.isContentEditable))) return true; } catch (e) {}
+        }
+        return false;
+      })();
+    `;
+    let hasEditor = false;
+    for (let i = 0; i < 8; i++) {
+      hasEditor = await win.webContents.executeJavaScript(hasEditorScript).catch(() => false);
+      if (hasEditor) break;
+      await humanDelay(600, 1100);
+    }
+    if (!hasEditor) {
+      return {
+        ok: true,
+        needsHuman: true,
+        error: '답변 입력칸을 찾지 못했습니다(로그인 여부 확인). 클립보드에 답변을 복사해 두었으니 직접 붙여넣어 주세요.',
+      };
+    }
+    // 답변 쓰기 전, 사람처럼 잠깐 읽는 시간
+    await humanDelay(1500, 3000);
 
     // semi/auto: 에디터에 본문을 "사람처럼 한 글자씩" 입력.
     // 지식인 답변칸 = iframe 내부 body[contenteditable] (SmartEditor).

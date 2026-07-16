@@ -35,6 +35,9 @@ const api = {
   answers: {
     generate: (opts: { questionId: number; brandId?: number; includePromo?: boolean }) =>
       ipcRenderer.invoke('answers:generate', opts),
+    generateAll: (questionIds: number[]) => ipcRenderer.invoke('answers:generateAll', questionIds),
+    generateAllStatus: () => ipcRenderer.invoke('answers:generateAllStatus'),
+    drafts: () => ipcRenderer.invoke('answers:drafts'),
     listForQuestion: (questionId: number) =>
       ipcRenderer.invoke('answers:listForQuestion', questionId),
     updateBody: (id: number, body: string) =>

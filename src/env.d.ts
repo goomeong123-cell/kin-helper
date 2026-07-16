@@ -86,6 +86,9 @@ export interface Api {
   };
   answers: {
     generate: (opts: { questionId: number; brandId?: number; includePromo?: boolean }) => Promise<{ ok: boolean; answer?: Answer; error?: string }>;
+    generateAll: (questionIds: number[]) => Promise<{ ok: boolean; done?: number; failed?: number; error?: string }>;
+    generateAllStatus: () => Promise<{ running: boolean }>;
+    drafts: () => Promise<Answer[]>;
     listForQuestion: (questionId: number) => Promise<Answer[]>;
     updateBody: (id: number, body: string) => Promise<Answer>;
     post: (opts: { answerId: number; accountId: number; mode: PostMode }) => Promise<{ ok: boolean; error?: string; needsHuman?: boolean }>;
