@@ -379,6 +379,50 @@ export async function openAnswerWindow(opts: {
   }
 }
 
+/**
+ * 네이버 로그인 쿠키를 디스크에 영구 저장한다.
+ * NID_SES 등은 만료일 없는 '세션 쿠키'라 앱을 끄면 사라져서 매번 재로그인하게 된다.
+ * → 만료일(30일)을 붙여 다시 저장하면 앱 재시작·업데이트 후에도 로그인이 유지됨.
+ */
+export async function persistNaverCookies(ses: Electron.Session): Promise<number> {
+  let saved = 0;
+  try {
+    const cookies = await ses.cookies.get({ domain: '.naver.com' });
+    const expirationDate = Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 30; // 30일
+    for (const c of cookies) {
+      if (c.expirationDate) continue; // 이미 영구 쿠키
+      const host = (c.domain || '').replace(/^\./, '');
+      if (!host) continue;
+      try {
+        await ses.cookies.set({
+          url: `https://${host}${c.path || '/'}`,
+          name: c.name,
+          value: c.value,
+          domain: c.domain,
+          path: c.path,
+          secure: c.secure,
+          httpOnly: c.httpOnly,
+          expirationDate,
+          sameSite: c.sameSite,
+        });
+        saved++;
+      } catch {
+        // 개별 쿠키 실패는 무시
+      }
+    }
+    await ses.cookies.flushStore();
+  } catch {
+    // ignore
+  }
+  return saved;
+}
+
+/** 계정 세션의 쿠키를 영구화 (외부에서 계정 정보로 호출) */
+export async function persistAccountLogin(acc: AccountProxy): Promise<number> {
+  const ses = await getAccountSession(acc);
+  return persistNaverCookies(ses);
+}
+
 /** 계정 로그인용 창 (사람이 직접 로그인) */
 export async function openLoginWindow(acc: AccountProxy): Promise<void> {
   const ses = await getAccountSession(acc);
@@ -386,9 +430,19 @@ export async function openLoginWindow(acc: AccountProxy): Promise<void> {
     show: true,
     width: 980,
     height: 760,
-    title: `네이버 로그인 · ${acc.naverId}`,
+    title: `네이버 로그인 · ${acc.naverId} — 로그인 후 창을 닫으세요`,
     webPreferences: { session: ses },
   });
+
+  // 로그인 진행 중 주기적으로, 그리고 창 닫을 때 쿠키를 영구 저장
+  const timer = setInterval(() => {
+    persistNaverCookies(ses).catch(() => {});
+  }, 5000);
+  win.on('closed', () => {
+    clearInterval(timer);
+    persistNaverCookies(ses).catch(() => {});
+  });
+
   await win.loadURL('https://nid.naver.com/nidlogin.login');
 }
 
@@ -476,7 +530,11 @@ export async function autoIsLoggedIn(win: BrowserWindow): Promise<{ ok: boolean;
     const names = new Set(cookies.map((c) => c.name));
     const hasAuth = names.has('NID_AUT');
     const hasSes = names.has('NID_SES');
-    if (hasAuth && hasSes) return { ok: true, detail: `쿠키 확인(NID_AUT/NID_SES)` };
+    // 둘 중 하나만 있어도 로그인으로 간주 (NID_SES는 세션 쿠키라 재시작 후 없을 수 있음)
+    if (hasAuth || hasSes) {
+      await persistNaverCookies(ses); // 확인된 로그인 쿠키를 영구화
+      return { ok: true, detail: `쿠키 확인(NID_AUT=${hasAuth}, NID_SES=${hasSes})` };
+    }
 
     // 보조 확인: 페이지에서 로그아웃 링크가 보이면 로그인된 것으로 간주
     const domLoggedIn = await win.webContents

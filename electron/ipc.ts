@@ -6,6 +6,7 @@ import {
   fetchQuestionDetail,
   openAnswerWindow,
   openLoginWindow,
+  persistAccountLogin,
   openAutoWindow,
   autoScrapeList,
   autoOpenAndAnswer,
@@ -424,6 +425,22 @@ export function registerIpc(ipcMain: IpcMain) {
   /* ---------- 앱 정보 ---------- */
   ipcMain.handle('app:version', () => app.getVersion());
 
+  // 모든 계정의 로그인 쿠키를 디스크에 영구 저장 (앱 종료 전 호출 → 재시작/업데이트 후 로그인 유지)
+  const persistAllLogins = async () => {
+    try {
+      const accs = db().prepare('SELECT * FROM accounts').all() as any[];
+      for (const a of accs) {
+        await persistAccountLogin(accountToProxy(a)).catch(() => 0);
+      }
+    } catch {
+      // ignore
+    }
+  };
+  ipcMain.handle('accounts:persistLogins', persistAllLogins);
+  app.on('before-quit', () => {
+    void persistAllLogins();
+  });
+
   /* ---------- 완전자동 (Autopilot) ---------- */
   let autoRunning = false;
   let autoStop = false;
@@ -525,11 +542,11 @@ export function registerIpc(ipcMain: IpcMain) {
     const login = await autoIsLoggedIn(autoWin);
     if (autoStop) return;
     if (!login.ok) {
-      pushLog(`❌ 로그인 안 됨 (${login.detail})`);
-      pushLog('→ [계정·프록시] 탭에서 이 계정의 [로그인 창]으로 로그인 후 다시 시작하세요.');
-      return;
+      // 오판 가능성이 있으므로 중단하지 않고 일단 진행 — 실제로 안 되면 '답변' 버튼 단계에서 잡힘
+      pushLog(`⚠ 로그인 확인 실패 (${login.detail}) — 일단 진행해 봅니다`);
+    } else {
+      pushLog(`로그인 확인됨 ✓ (${login.detail})`);
     }
-    pushLog(`로그인 확인됨 ✓ (${login.detail})`);
 
     while (!autoStop) {
       if (!autoWin || autoWin.isDestroyed()) break;
