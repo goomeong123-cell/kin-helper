@@ -547,7 +547,7 @@ export function registerIpc(ipcMain: IpcMain) {
     return true;
   });
 
-  ipcMain.handle('auto:start', async (_e, opts: { accountId: number; submit: boolean; brandId?: number; promoOnly?: boolean }) => {
+  ipcMain.handle('auto:start', async (_e, opts: { accountId: number; submit: boolean; brandId?: number; useCollected?: boolean }) => {
     if (autoRunning) return { ok: false, error: '이미 실행 중입니다.' };
     const acc = db().prepare('SELECT * FROM accounts WHERE id = ?').get([opts.accountId]) as any;
     if (!acc) return { ok: false, error: '계정을 찾을 수 없습니다.' };
@@ -558,7 +558,7 @@ export function registerIpc(ipcMain: IpcMain) {
     autoStop = false;
     autoCount = 0;
     pushLog('시작 중…');
-    runAutopilot(opts.accountId, opts.submit, opts.brandId, opts.promoOnly)
+    runAutopilot(opts.accountId, opts.submit, opts.brandId, opts.useCollected)
       .catch((e) => {
         pushLog('오류: ' + (e instanceof Error ? e.message : String(e)));
       })
@@ -577,7 +577,7 @@ export function registerIpc(ipcMain: IpcMain) {
     return { ok: true };
   });
 
-  async function runAutopilot(accountId: number, submit: boolean, onlyBrandId?: number, promoOnly?: boolean) {
+  async function runAutopilot(accountId: number, submit: boolean, onlyBrandId?: number, useCollected?: boolean) {
     const acc = db().prepare('SELECT * FROM accounts WHERE id = ?').get([accountId]) as any;
     const proxy = accountToProxy(acc);
     const ratio = Number(getS('promo_ratio') || '20');
@@ -613,11 +613,48 @@ export function registerIpc(ipcMain: IpcMain) {
         break;
       }
 
-      // 홍보/일상 결정
+      // ===== 수집 발행: DB에 수집해둔 질문을 순서대로 발행 =====
       let keyword: string | undefined;
       let brandId: number | undefined;
-      const wantPromo = promoOnly ? true : Math.random() * 100 < ratio;
-      if (wantPromo) {
+      let qrow: any = null;
+      let targetUrl = '';
+      let targetTitle = '';
+      let isPromo = false;
+
+      if (useCollected) {
+        let sql = "SELECT * FROM questions WHERE status='new'";
+        const params: any[] = [];
+        if (onlyBrandId) {
+          sql += ' AND matched_brand_id = ?';
+          params.push(onlyBrandId);
+        }
+        sql += ' ORDER BY collected_at ASC LIMIT 1';
+        qrow = db().prepare(sql).get(params);
+        if (!qrow) {
+          pushLog('수집한 질문을 모두 처리했습니다 — 종료 ([질문 수집]으로 더 모아주세요)');
+          break;
+        }
+        brandId = qrow.matched_brand_id ?? undefined;
+        keyword = qrow.matched_keyword ?? undefined;
+        targetUrl = qrow.url;
+        targetTitle = qrow.title;
+        if (brandId) {
+          const b = db().prepare('SELECT system_prompt FROM brands WHERE id = ?').get([brandId]) as any;
+          isPromo = !!(b?.system_prompt && String(b.system_prompt).trim());
+        }
+        const remain = db()
+          .prepare(
+            onlyBrandId
+              ? "SELECT COUNT(*) n FROM questions WHERE status='new' AND matched_brand_id = ?"
+              : "SELECT COUNT(*) n FROM questions WHERE status='new'",
+          )
+          .get(onlyBrandId ? [onlyBrandId] : []) as any;
+        pushLog(`수집 발행 (${isPromo ? '홍보' : '일상'}) · 남은 수집글 ${remain?.n ?? 0}건`);
+      }
+
+      // ===== 완전자동: 지식인에서 실시간으로 질문을 찾아 발행 =====
+      const wantPromo = Math.random() * 100 < ratio;
+      if (!useCollected && wantPromo) {
         const brandsWithPromo = (
           onlyBrandId
             ? (db()
@@ -636,54 +673,59 @@ export function registerIpc(ipcMain: IpcMain) {
           }
         }
       }
-      const isPromo = !!(keyword && brandId);
+      if (!useCollected) isPromo = !!(keyword && brandId);
 
       let list: Awaited<ReturnType<typeof autoScrapeList>> = [];
-      if (isPromo) {
+      if (!useCollected && isPromo) {
         // 10~11단계: 키워드 검색 → 최신순
         pushLog(`홍보: '${keyword}' 검색 → 최신순`);
         await autoSearchKeyword(autoWin, keyword!);
         if (autoStop || !autoWin || autoWin.isDestroyed()) break;
         list = await autoScrapeWaitingList(autoWin);
-      } else {
+      } else if (!useCollected) {
         // 3~6단계: 네이버 → 지식iN → 답변하기 → '답변을 기다리는 질문'
         pushLog('일상: 지식iN 답변하기 목록으로 이동');
         await autoGoToKinAnswerList(autoWin);
         if (autoStop || !autoWin || autoWin.isDestroyed()) break;
         list = await autoScrapeWaitingList(autoWin);
       }
-      pushLog(`질문 ${list.length}개 발견`);
-      if (autoStop || !autoWin || autoWin.isDestroyed()) break;
 
-      // 아직 우리가 답변 안 한 질문 고르기
-      const fresh = list.find((q) => {
-        const row = db().prepare('SELECT status FROM questions WHERE kin_key=?').get([q.kinKey]) as any;
-        return !row || row.status !== 'answered';
-      });
-      if (!fresh) {
-        pushLog('새 질문 없음 — 잠시 대기');
-        await sleepRnd(15000, 30000);
-        continue;
+      if (!useCollected) {
+        pushLog(`질문 ${list.length}개 발견`);
+        if (autoStop || !autoWin || autoWin.isDestroyed()) break;
+
+        // 아직 우리가 답변 안 한 질문 고르기
+        const fresh = list.find((q) => {
+          const row = db().prepare('SELECT status FROM questions WHERE kin_key=?').get([q.kinKey]) as any;
+          return !row || row.status !== 'answered';
+        });
+        if (!fresh) {
+          pushLog('새 질문 없음 — 잠시 대기');
+          await sleepRnd(15000, 30000);
+          continue;
+        }
+
+        db()
+          .prepare(
+            `INSERT OR IGNORE INTO questions (kin_key, title, url, content, category, matched_brand_id, matched_keyword)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run([fresh.kinKey, fresh.title, fresh.url, fresh.content || null, '', brandId ?? null, keyword || null]);
+        qrow = db().prepare('SELECT * FROM questions WHERE kin_key=?').get([fresh.kinKey]) as any;
+        targetUrl = fresh.url;
+        targetTitle = fresh.title;
       }
-
-      db()
-        .prepare(
-          `INSERT OR IGNORE INTO questions (kin_key, title, url, content, category, matched_brand_id, matched_keyword)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        )
-        .run([fresh.kinKey, fresh.title, fresh.url, fresh.content || null, '', brandId ?? null, keyword || null]);
-      const qrow = db().prepare('SELECT * FROM questions WHERE kin_key=?').get([fresh.kinKey]) as any;
 
       // 질문 본문을 실제로 가져왔는지 확인해 로그에 남김
       try {
-        const d = await fetchQuestionDetail(fresh.url);
+        const d = await fetchQuestionDetail(targetUrl);
         pushLog(
-          `질문 확인: 제목 ${(d.title || fresh.title || '').length}자 / 본문 ${(d.body || fresh.content || '').length}자`,
+          `질문 확인: 제목 ${(d.title || targetTitle || '').length}자 / 본문 ${(d.body || '').length}자`,
         );
       } catch {
         // ignore
       }
-      pushLog(`답변 생성 중: ${fresh.title.slice(0, 24)}`);
+      pushLog(`답변 생성 중: ${String(targetTitle).slice(0, 24)}`);
       const gen = (await doGenerate(qrow.id, brandId, isPromo)) as any;
       if (!gen.ok || !gen.answer) {
         pushLog('생성 실패 — 다음');
@@ -693,7 +735,7 @@ export function registerIpc(ipcMain: IpcMain) {
       if (autoStop || !autoWin || autoWin.isDestroyed()) break;
 
       pushLog('사람처럼 답변 작성 중…');
-      const res = await autoOpenAndAnswer(autoWin, fresh.url, gen.answer.body, submit);
+      const res = await autoOpenAndAnswer(autoWin, targetUrl, gen.answer.body, submit);
       if (res.error) {
         pushLog('작성 실패: ' + res.error);
         await sleepRnd(6000, 12000);

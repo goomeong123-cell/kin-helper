@@ -99,8 +99,8 @@ export default function Questions() {
       submit: autoSubmit,
       // 브랜드 탭을 고르면 홍보는 그 브랜드만 사용 ('전체'면 홍보 브랜드 중 랜덤)
       brandId: activeBrand === 'all' ? undefined : activeBrand,
-      // 수집 발행 탭: 일상글 없이 홍보 질문만 처리
-      promoOnly: autoTab === 'collect',
+      // 수집 발행 탭: 실시간 탐색 대신 '수집해둔 질문'을 순서대로 발행
+      useCollected: autoTab === 'collect',
     });
     if (!res.ok) toast(res.error || '시작 실패');
     else {
@@ -282,7 +282,7 @@ export default function Questions() {
                 </>
               ) : (
                 <>
-                  <b>일상글은 건너뛰고</b>, 브랜드 키워드로 검색한 <b>홍보 대상 질문만</b> 연달아 답변합니다.
+                  위에 <b>수집해둔 질문 목록</b>을 순서대로 꺼내 답변·등록합니다. (화면에서 삭제한 질문은 제외)
                   {activeBrand === 'all'
                     ? ' (지금은 전체 — 위 브랜드 탭에서 브랜드를 고르면 그 브랜드만)'
                     : ''}
