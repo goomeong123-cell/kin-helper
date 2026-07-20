@@ -1,4 +1,4 @@
-import { BrowserWindow, type IpcMain } from 'electron';
+import { app, BrowserWindow, type IpcMain } from 'electron';
 import { getDb } from './db';
 import { generateAnswer } from './claude';
 import {
@@ -417,6 +417,9 @@ export function registerIpc(ipcMain: IpcMain) {
     return true;
   });
 
+  /* ---------- 앱 정보 ---------- */
+  ipcMain.handle('app:version', () => app.getVersion());
+
   /* ---------- 완전자동 (Autopilot) ---------- */
   let autoRunning = false;
   let autoStop = false;
@@ -424,6 +427,15 @@ export function registerIpc(ipcMain: IpcMain) {
   let autoCount = 0;
   let autoWin: BrowserWindow | null = null;
   let autoNextResolve: (() => void) | null = null;
+  const autoLog: string[] = [];
+
+  // 상태를 갱신하면서 로그로도 남김 (어디서 멈추는지 화면에서 바로 보이게)
+  const pushLog = (msg: string) => {
+    autoStatus = msg;
+    const t = new Date().toLocaleTimeString('ko-KR', { hour12: false });
+    autoLog.unshift(`[${t}] ${msg}`);
+    if (autoLog.length > 12) autoLog.pop();
+  };
 
   const sleepRnd = (a: number, b: number) =>
     new Promise((r) => setTimeout(r, a + Math.floor(Math.random() * (b - a))));
@@ -433,6 +445,7 @@ export function registerIpc(ipcMain: IpcMain) {
     status: autoStatus,
     count: autoCount,
     waiting: !!autoNextResolve,
+    log: autoLog.slice(),
   }));
 
   ipcMain.handle('auto:next', () => {
@@ -471,10 +484,10 @@ export function registerIpc(ipcMain: IpcMain) {
     autoRunning = true;
     autoStop = false;
     autoCount = 0;
-    autoStatus = '시작 중…';
+    pushLog('시작 중…');
     runAutopilot(opts.accountId, opts.submit)
       .catch((e) => {
-        autoStatus = '오류: ' + (e instanceof Error ? e.message : String(e));
+        pushLog('오류: ' + (e instanceof Error ? e.message : String(e)));
       })
       .finally(() => {
         autoRunning = false;
@@ -512,7 +525,7 @@ export function registerIpc(ipcMain: IpcMain) {
         )
         .get([accountId]) as any;
       if ((today?.n || 0) >= dailyLimit) {
-        autoStatus = `하루 한도(${dailyLimit}) 도달 — 종료`;
+        pushLog(`하루 한도(${dailyLimit}) 도달 — 종료`);
         break;
       }
 
@@ -534,7 +547,7 @@ export function registerIpc(ipcMain: IpcMain) {
         }
       }
       const isPromo = !!(keyword && brandId);
-      autoStatus = isPromo ? `홍보 질문 찾는 중 (${keyword})…` : '일상 질문 찾는 중…';
+      pushLog(isPromo ? `홍보 질문 찾는 중 (${keyword})…` : '일상 질문 찾는 중…');
 
       const list = await autoScrapeList(autoWin, keyword);
       if (autoStop || !autoWin || autoWin.isDestroyed()) break;
@@ -545,7 +558,7 @@ export function registerIpc(ipcMain: IpcMain) {
         return !row || row.status !== 'answered';
       });
       if (!fresh) {
-        autoStatus = '새 질문 없음 — 잠시 대기';
+        pushLog('새 질문 없음 — 잠시 대기');
         await sleepRnd(15000, 30000);
         continue;
       }
@@ -558,19 +571,19 @@ export function registerIpc(ipcMain: IpcMain) {
         .run([fresh.kinKey, fresh.title, fresh.url, fresh.content || null, '', brandId ?? null, keyword || null]);
       const qrow = db().prepare('SELECT * FROM questions WHERE kin_key=?').get([fresh.kinKey]) as any;
 
-      autoStatus = `답변 생성 중: ${fresh.title.slice(0, 24)}`;
+      pushLog(`답변 생성 중: ${fresh.title.slice(0, 24)}`);
       const gen = (await doGenerate(qrow.id, brandId, isPromo)) as any;
       if (!gen.ok || !gen.answer) {
-        autoStatus = '생성 실패 — 다음';
+        pushLog('생성 실패 — 다음');
         await sleepRnd(5000, 10000);
         continue;
       }
       if (autoStop || !autoWin || autoWin.isDestroyed()) break;
 
-      autoStatus = '사람처럼 답변 작성 중…';
+      pushLog('사람처럼 답변 작성 중…');
       const res = await autoOpenAndAnswer(autoWin, fresh.url, gen.answer.body, submit);
       if (res.error) {
-        autoStatus = '작성 실패: ' + res.error;
+        pushLog('작성 실패: ' + res.error);
         await sleepRnd(6000, 12000);
         continue;
       }
@@ -581,14 +594,14 @@ export function registerIpc(ipcMain: IpcMain) {
           .run([accountId, new Date().toISOString(), gen.answer.id]);
         db().prepare("UPDATE questions SET status='answered' WHERE id=?").run([qrow.id]);
         autoCount++;
-        autoStatus = `등록 완료 (${autoCount}) — 다음까지 대기`;
+        pushLog(`등록 완료 (${autoCount}) — 다음까지 대기`);
         await sleepRnd(90000, 240000); // 사람처럼 1.5~4분 간격
       } else {
         // 관전 모드: 등록 직전 멈춤. 사람이 확인 후 [다음]
         db()
           .prepare("UPDATE answers SET account_id=?, mode='auto' WHERE id=?")
           .run([accountId, gen.answer.id]);
-        autoStatus = '등록 대기 — 브라우저에서 확인·등록 후 [다음]을 누르세요';
+        pushLog('등록 대기 — 브라우저에서 확인·등록 후 [다음]을 누르세요');
         await new Promise<void>((resolve) => {
           autoNextResolve = resolve;
         });

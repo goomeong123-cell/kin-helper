@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ToastProvider } from './lib/toast';
 import Questions from './pages/Questions';
 import Brands from './pages/Brands';
@@ -18,6 +18,14 @@ const NAV: { key: Page; label: string; ico: string }[] = [
 
 export default function App() {
   const [page, setPage] = useState<Page>('questions');
+  const [version, setVersion] = useState('');
+
+  useEffect(() => {
+    window.api.app
+      .version()
+      .then(setVersion)
+      .catch(() => {});
+  }, []);
 
   return (
     <ToastProvider>
@@ -34,6 +42,17 @@ export default function App() {
               {n.label}
             </button>
           ))}
+          <div
+            style={{
+              marginTop: 'auto',
+              padding: '10px 14px',
+              fontSize: 12,
+              color: 'var(--text-mute)',
+              fontWeight: 600,
+            }}
+          >
+            {version ? `ver ${version}` : ''}
+          </div>
         </aside>
         <main className="main">
           {page === 'questions' && <Questions />}

@@ -52,6 +52,9 @@ const api = {
     get: (key: string) => ipcRenderer.invoke('settings:get', key),
     set: (key: string, value: string) => ipcRenderer.invoke('settings:set', key, value),
   },
+  app: {
+    version: () => ipcRenderer.invoke('app:version'),
+  },
   auto: {
     start: (opts: { accountId: number; submit: boolean }) => ipcRenderer.invoke('auto:start', opts),
     stop: () => ipcRenderer.invoke('auto:stop'),

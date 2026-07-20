@@ -26,11 +26,18 @@ export default function Questions() {
   const [collecting, setCollecting] = useState(false);
   const [promoRatio, setPromoRatio] = useState(20);
   const [genAll, setGenAll] = useState(false);
-  const [auto, setAuto] = useState<{ running: boolean; status: string; count: number; waiting: boolean }>({
+  const [auto, setAuto] = useState<{
+    running: boolean;
+    status: string;
+    count: number;
+    waiting: boolean;
+    log: string[];
+  }>({
     running: false,
     status: '대기',
     count: 0,
     waiting: false,
+    log: [],
   });
   const [autoSubmit, setAutoSubmit] = useState(false);
 
@@ -284,6 +291,26 @@ export default function Questions() {
             )}
           </div>
         )}
+        {auto.log.length > 0 && (
+          <div
+            style={{
+              marginTop: 12,
+              background: 'var(--bg-soft)',
+              borderRadius: 10,
+              padding: '10px 12px',
+              maxHeight: 150,
+              overflowY: 'auto',
+              fontSize: 12,
+              lineHeight: 1.7,
+              color: 'var(--text-sub)',
+              fontFamily: 'Consolas, monospace',
+            }}
+          >
+            {auto.log.map((l, i) => (
+              <div key={i}>{l}</div>
+            ))}
+          </div>
+        )}
       </div>
 
       {questions.length === 0 ? (
@@ -468,7 +495,7 @@ function QuestionCard({
           )}
           <div className="q-actions">
             <button className="btn primary" onClick={post} disabled={busy}>
-              {busy ? <span className="spinner" /> : `${MODE_LABEL[mode]}로 등록`}
+              {busy ? <span className="spinner" /> : `${MODE_LABEL[mode]} 등록`}
             </button>
             <button className="btn" onClick={generate} disabled={busy}>
               다시 생성
