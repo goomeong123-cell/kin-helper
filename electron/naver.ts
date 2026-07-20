@@ -461,6 +461,184 @@ function typeJS(answer: string): string {
   `;
 }
 
+/** 네이버 로그인 상태 확인 (로그아웃이면 로그인 링크가 보임) */
+export async function autoIsLoggedIn(win: BrowserWindow): Promise<boolean> {
+  try {
+    await win.loadURL('https://www.naver.com/');
+    await humanDelay(1200, 2200);
+    return await win.webContents
+      .executeJavaScript(
+        `
+        (function () {
+          // 로그아웃 상태: 로그인 버튼/링크 존재
+          const loginLink = document.querySelector('a[href*="nid.naver.com/nidlogin.login"], .link_login');
+          // 로그인 상태: 로그아웃 링크 또는 내 정보 영역 존재
+          const logoutLink = document.querySelector('a[href*="nid.naver.com/nidlogin.logout"], .link_logout');
+          if (logoutLink) return true;
+          if (loginLink) return false;
+          return true;
+        })();
+      `,
+      )
+      .catch(() => false);
+  } catch {
+    return false;
+  }
+}
+
+/** 네이버 메인 → (…) 버튼 → 지식iN 클릭 → 답변하기 클릭 (사람처럼 클릭 경로) */
+export async function autoGoToKinAnswerList(win: BrowserWindow): Promise<boolean> {
+  try {
+    // 네이버 메인에서 시작 (이미 로그인 확인 시 여기 있음)
+    if (!/naver\.com\/?$/.test(win.webContents.getURL())) {
+      await win.loadURL('https://www.naver.com/');
+      await humanDelay(1200, 2200);
+    }
+    // (…) 더보기 버튼 클릭
+    await win.webContents
+      .executeJavaScript(
+        `
+        (function () {
+          const more = document.querySelector('.service_icon.type_more');
+          const btn = more ? (more.closest('a,button') || more) : null;
+          if (btn) { btn.click(); return true; }
+          return false;
+        })();
+      `,
+      )
+      .catch(() => false);
+    await humanDelay(700, 1400);
+
+    // 지식iN 링크 클릭 (target=_blank 제거해 같은 창에서 이동)
+    const went = await win.webContents
+      .executeJavaScript(
+        `
+        (function () {
+          let a = document.querySelector('a.link_service .service_icon.type_kin');
+          a = a ? a.closest('a') : document.querySelector('a[href*="kin.naver.com"]');
+          if (!a) return false;
+          a.removeAttribute('target');
+          a.click();
+          return true;
+        })();
+      `,
+      )
+      .catch(() => false);
+    await humanDelay(1500, 2600);
+
+    // 클릭이 안 먹었으면 직접 이동
+    if (!went || !/kin\.naver\.com/.test(win.webContents.getURL())) {
+      await win.loadURL('https://kin.naver.com/');
+      await humanDelay(1200, 2000);
+    }
+
+    // 답변하기 클릭
+    await win.webContents
+      .executeJavaScript(
+        `
+        (function () {
+          const els = Array.from(document.querySelectorAll('a, em, button'));
+          const el = els.find((e) => (e.textContent || '').trim() === '답변하기');
+          const a = el ? (el.closest('a') || el) : null;
+          if (a) { a.removeAttribute && a.removeAttribute('target'); a.click(); return true; }
+          return false;
+        })();
+      `,
+      )
+      .catch(() => false);
+    await humanDelay(1500, 2600);
+
+    // 최종적으로 답변 대기 목록 페이지 보장
+    if (!/questionList\.naver/.test(win.webContents.getURL())) {
+      await win.loadURL('https://kin.naver.com/qna/questionList.naver');
+      await humanDelay(1400, 2400);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** '답변을 기다리는 질문' 목록에서 질문 추출 (JS 렌더링되므로 실제 창에서 스크랩) */
+export async function autoScrapeWaitingList(win: BrowserWindow): Promise<CollectedQuestion[]> {
+  // 목록이 채워질 때까지 대기 + 사람처럼 스크롤
+  for (let i = 0; i < 6; i++) {
+    const n = await win.webContents
+      .executeJavaScript(`document.querySelectorAll('a[href*="detail.naver"]').length;`)
+      .catch(() => 0);
+    if (typeof n === 'number' && n > 0) break;
+    await humanDelay(700, 1300);
+  }
+  await win.webContents
+    .executeJavaScript(`window.scrollBy(0, ${250 + Math.floor(Math.random() * 350)});`)
+    .catch(() => {});
+  await humanDelay(600, 1300);
+
+  const script = `
+    (function () {
+      const out = []; const seen = new Set();
+      const keyOf = (h) => { const m = h.match(/dirId=(\\d+)[\\s\\S]*?docId=(\\d+)/) || h.match(/docId=(\\d+)/); return m ? m.slice(1).join('-') : h; };
+      const add = (a, contEl) => {
+        const href = a.href || ''; if (!/detail\\.naver/.test(href) || !/docId=/.test(href)) return;
+        const key = keyOf(href); if (seen.has(key)) return;
+        const title = (a.textContent || '').replace(/\\s+/g, ' ').trim(); if (title.length < 4) return;
+        seen.add(key);
+        out.push({ kinKey: key, title, url: href, content: contEl ? (contEl.textContent || '').replace(/\\s+/g,' ').trim() : '', category: '' });
+      };
+      // 1) '답변을 기다리는 질문' 영역 우선
+      const box = document.querySelector('._noanswer_list, .answer_list');
+      if (box) {
+        box.querySelectorAll('li').forEach((li) => {
+          const a = li.querySelector('a[href*="detail.naver"]');
+          if (a) add(a, li.querySelector('a.cont, .cont'));
+        });
+      }
+      // 2) 폴백: li.lst 구조
+      if (out.length === 0) {
+        document.querySelectorAll('li.lst').forEach((li) => {
+          const a = li.querySelector('div.tit a, a.txt') || li.querySelector('a[href*="detail.naver"]');
+          if (a) add(a, li.querySelector('a.cont'));
+        });
+      }
+      // 3) 폴백: 페이지 전체 detail 링크
+      if (out.length === 0) {
+        document.querySelectorAll('a[href*="detail.naver"]').forEach((a) => add(a, null));
+      }
+      return out.slice(0, 40);
+    })();
+  `;
+  const r = await win.webContents.executeJavaScript(script).catch(() => []);
+  return Array.isArray(r) ? r : [];
+}
+
+/** 지식인 검색창에 키워드 검색 → 최신순 정렬 (홍보용) */
+export async function autoSearchKeyword(win: BrowserWindow, keyword: string): Promise<boolean> {
+  try {
+    // 검색은 지식인 검색 페이지로 바로 이동(검색창 입력과 동일 결과, 더 안정적)
+    await win.loadURL(
+      `https://kin.naver.com/search/list.naver?query=${encodeURIComponent(keyword)}`,
+    );
+    await humanDelay(1400, 2400);
+    // 최신순 클릭
+    await win.webContents
+      .executeJavaScript(
+        `
+        (function () {
+          const els = Array.from(document.querySelectorAll('button, a'));
+          const b = els.find((e) => (e.textContent || '').replace(/\\s+/g,'').includes('최신순'));
+          if (b) { b.click(); return true; }
+          return false;
+        })();
+      `,
+      )
+      .catch(() => false);
+    await humanDelay(1200, 2200);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** 완전자동용 브라우저 창 (계정 세션·프록시·크롬 UA) */
 export async function openAutoWindow(acc: AccountProxy): Promise<BrowserWindow> {
   const ses = await getAccountSession(acc);
@@ -513,7 +691,12 @@ export async function autoScrapeList(
   return Array.isArray(r) ? r : [];
 }
 
-/** 상세로 이동 → 에디터 대기 → 사람처럼 타이핑 → (submit) 등록 클릭 */
+/**
+ * 상세로 이동 → '답변' 버튼 클릭해 에디터 열기 → 사람처럼 타이핑 → (submit) 등록 클릭.
+ * 실제 지식인 구조:
+ *   답변 열기 = button._answerWriteButton._scrollToEditor
+ *   등록      = button#answerRegisterButton._answerRegisterButton
+ */
 export async function autoOpenAndAnswer(
   win: BrowserWindow,
   url: string,
@@ -522,21 +705,67 @@ export async function autoOpenAndAnswer(
 ): Promise<{ typed: boolean; submitted: boolean; error?: string }> {
   try {
     await win.loadURL(url);
-    await humanDelay(1500, 3200); // 읽는 시간
+    await humanDelay(1800, 3400); // 질문 읽는 시간
+
+    // 이미 내가 답변한 질문이면 중단 (중복 방지 2차 안전장치)
+    const already = await win.webContents
+      .executeJavaScript(
+        `
+        (function () {
+          // 내 답변이 이미 있으면 '수정'/'삭제' 같은 내 답변 컨트롤이 보임
+          return !!document.querySelector('._answerModifyButton, .my_answer');
+        })();
+      `,
+      )
+      .catch(() => false);
+    if (already) return { typed: false, submitted: false, error: '이미 답변한 질문(건너뜀)' };
+
+    // '답변' 버튼 클릭 → 에디터 열기
+    const opened = await win.webContents
+      .executeJavaScript(
+        `
+        (function () {
+          const b = document.querySelector('button._answerWriteButton, .endAnswerButton._answerWriteButton, ._scrollToEditor');
+          if (b) { b.click(); return true; }
+          return false;
+        })();
+      `,
+      )
+      .catch(() => false);
+    if (!opened) {
+      return { typed: false, submitted: false, error: "'답변' 버튼 없음(로그인 상태/페이지 확인)" };
+    }
+    await humanDelay(1200, 2200);
+
+    // 에디터 대기
     let hasEditor = false;
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < 10; i++) {
       hasEditor = await win.webContents.executeJavaScript(HAS_EDITOR_JS).catch(() => false);
       if (hasEditor) break;
       await humanDelay(600, 1100);
     }
-    if (!hasEditor) return { typed: false, submitted: false, error: '답변칸 없음(로그인/페이지 확인)' };
-    await humanDelay(1200, 2600);
-    const typed = await win.webContents.executeJavaScript(typeJS(answer)).catch(() => false);
-    if (!typed) return { typed: false, submitted: false, error: '입력 실패' };
-    if (!submit) return { typed: true, submitted: false };
+    if (!hasEditor) return { typed: false, submitted: false, error: '답변 입력칸이 열리지 않음' };
+
     await humanDelay(1000, 2200);
-    const submitted = await win.webContents.executeJavaScript(SUBMIT_JS).catch(() => false);
-    return { typed: true, submitted: !!submitted };
+    const typed = await win.webContents.executeJavaScript(typeJS(answer)).catch(() => false);
+    if (!typed) return { typed: false, submitted: false, error: '답변 입력 실패' };
+    if (!submit) return { typed: true, submitted: false };
+
+    await humanDelay(1200, 2400);
+    const submitted = await win.webContents
+      .executeJavaScript(
+        `
+        (function () {
+          const b = document.querySelector('#answerRegisterButton, button._answerRegisterButton');
+          if (b) { b.click(); return true; }
+          return false;
+        })();
+      `,
+      )
+      .catch(() => false);
+    if (!submitted) return { typed: true, submitted: false, error: "'등록' 버튼을 찾지 못함" };
+    await humanDelay(1500, 2600); // 등록 처리 대기
+    return { typed: true, submitted: true };
   } catch (e: unknown) {
     return { typed: false, submitted: false, error: e instanceof Error ? e.message : String(e) };
   }

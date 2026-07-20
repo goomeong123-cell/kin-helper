@@ -9,6 +9,10 @@ import {
   openAutoWindow,
   autoScrapeList,
   autoOpenAndAnswer,
+  autoIsLoggedIn,
+  autoGoToKinAnswerList,
+  autoScrapeWaitingList,
+  autoSearchKeyword,
   type AccountProxy,
   type PostMode,
 } from './naver';
@@ -516,6 +520,16 @@ export function registerIpc(ipcMain: IpcMain) {
       autoWin = null;
     });
 
+    // 1~2단계: 네이버 접속 후 로그인 상태 확인 (비밀번호 자동입력은 하지 않음)
+    pushLog('네이버 접속 · 로그인 상태 확인 중…');
+    const loggedIn = await autoIsLoggedIn(autoWin);
+    if (autoStop) return;
+    if (!loggedIn) {
+      pushLog('❌ 로그인이 안 된 계정입니다. [계정·프록시] 탭에서 로그인 창으로 1회 로그인 후 다시 시작하세요.');
+      return;
+    }
+    pushLog('로그인 확인됨 ✓');
+
     while (!autoStop) {
       if (!autoWin || autoWin.isDestroyed()) break;
 
@@ -547,9 +561,22 @@ export function registerIpc(ipcMain: IpcMain) {
         }
       }
       const isPromo = !!(keyword && brandId);
-      pushLog(isPromo ? `홍보 질문 찾는 중 (${keyword})…` : '일상 질문 찾는 중…');
 
-      const list = await autoScrapeList(autoWin, keyword);
+      let list: Awaited<ReturnType<typeof autoScrapeList>> = [];
+      if (isPromo) {
+        // 10~11단계: 키워드 검색 → 최신순
+        pushLog(`홍보: '${keyword}' 검색 → 최신순`);
+        await autoSearchKeyword(autoWin, keyword!);
+        if (autoStop || !autoWin || autoWin.isDestroyed()) break;
+        list = await autoScrapeWaitingList(autoWin);
+      } else {
+        // 3~6단계: 네이버 → 지식iN → 답변하기 → '답변을 기다리는 질문'
+        pushLog('일상: 지식iN 답변하기 목록으로 이동');
+        await autoGoToKinAnswerList(autoWin);
+        if (autoStop || !autoWin || autoWin.isDestroyed()) break;
+        list = await autoScrapeWaitingList(autoWin);
+      }
+      pushLog(`질문 ${list.length}개 발견`);
       if (autoStop || !autoWin || autoWin.isDestroyed()) break;
 
       // 아직 우리가 답변 안 한 질문 고르기
