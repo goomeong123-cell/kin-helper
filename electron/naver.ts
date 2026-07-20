@@ -648,6 +648,125 @@ export async function autoSearchKeyword(win: BrowserWindow, keyword: string): Pr
   }
 }
 
+/**
+ * 에디터에 실제 커서를 잡고 클릭 좌표를 구한다.
+ * 지식인 답변창은 iframe 안의 contenteditable이라, iframe 오프셋을 더해 실제 화면 좌표를 계산.
+ */
+async function focusEditorPoint(
+  win: BrowserWindow,
+): Promise<{ x: number; y: number } | null> {
+  const r = await win.webContents
+    .executeJavaScript(
+      `
+      (function () {
+        const big = (el) => { const r = el.getBoundingClientRect(); return r.width > 20 && r.height > 20; };
+        let target = null, offX = 0, offY = 0;
+        const tops = Array.from(document.querySelectorAll('[contenteditable="true"]')).filter(big);
+        if (tops.length) target = tops[0];
+        if (!target) {
+          for (const f of document.querySelectorAll('iframe')) {
+            try {
+              const d = f.contentDocument; if (!d) continue;
+              const fr = f.getBoundingClientRect(); if (fr.width < 50 || fr.height < 50) continue;
+              const cands = Array.from(d.querySelectorAll('[contenteditable="true"]')).filter(big);
+              const body = (d.body && d.body.isContentEditable) ? d.body : null;
+              const el = cands[0] || body;
+              if (el) { target = el; offX = fr.left; offY = fr.top; try { f.contentWindow.focus(); } catch (e) {} break; }
+            } catch (e) {}
+          }
+        }
+        if (!target) return null;
+        const doc = target.ownerDocument;
+        try { target.focus(); } catch (e) {}
+        try {
+          const range = doc.createRange();
+          range.selectNodeContents(target);
+          range.collapse(false);
+          const sel = doc.defaultView.getSelection();
+          sel.removeAllRanges(); sel.addRange(range);
+        } catch (e) {}
+        const b = target.getBoundingClientRect();
+        return {
+          x: Math.round(offX + b.left + Math.min(Math.max(b.width / 2, 30), 220)),
+          y: Math.round(offY + b.top + Math.min(Math.max(b.height / 3, 20), 60)),
+        };
+      })();
+    `,
+    )
+    .catch(() => null);
+  return r && typeof r.x === 'number' ? r : null;
+}
+
+/** 에디터 안 글자 수 (입력 성공 검증용) */
+async function editorTextLength(win: BrowserWindow): Promise<number> {
+  return await win.webContents
+    .executeJavaScript(
+      `
+      (function () {
+        const big = (el) => { const r = el.getBoundingClientRect(); return r.width > 20 && r.height > 20; };
+        let t = Array.from(document.querySelectorAll('[contenteditable="true"]')).filter(big)[0];
+        if (!t) {
+          for (const f of document.querySelectorAll('iframe')) {
+            try { const d = f.contentDocument; if (!d) continue;
+              const c = Array.from(d.querySelectorAll('[contenteditable="true"]')).filter(big)[0] || ((d.body && d.body.isContentEditable) ? d.body : null);
+              if (c) { t = c; break; }
+            } catch (e) {}
+          }
+        }
+        if (!t) { const ta = document.querySelector('textarea'); return ta ? (ta.value || '').trim().length : 0; }
+        return (t.innerText || t.textContent || '').trim().length;
+      })();
+    `,
+    )
+    .catch(() => 0);
+}
+
+/**
+ * 실제 키보드 입력으로 사람처럼 타이핑.
+ * (execCommand는 iframe 안에서 커서가 안 잡히면 조용히 실패하므로, 진짜 키 이벤트를 보낸다)
+ */
+export async function typeIntoEditorHuman(win: BrowserWindow, text: string): Promise<boolean> {
+  const pt = await focusEditorPoint(win);
+  if (!pt) return false;
+
+  try {
+    win.focus();
+    // 에디터를 실제로 클릭해서 커서 잡기
+    win.webContents.sendInputEvent({ type: 'mouseDown', x: pt.x, y: pt.y, button: 'left', clickCount: 1 });
+    win.webContents.sendInputEvent({ type: 'mouseUp', x: pt.x, y: pt.y, button: 'left', clickCount: 1 });
+  } catch {
+    // ignore
+  }
+  await humanDelay(500, 1000);
+
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const rnd = (a: number, b: number) => a + Math.floor(Math.random() * (b - a));
+
+  let i = 0;
+  for (const ch of text) {
+    if (win.isDestroyed()) return false;
+    try {
+      if (ch === '\n') {
+        win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Return' });
+        win.webContents.sendInputEvent({ type: 'char', keyCode: '\r' });
+        win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Return' });
+      } else {
+        win.webContents.sendInputEvent({ type: 'char', keyCode: ch });
+      }
+    } catch {
+      return false;
+    }
+    i++;
+    await sleep(rnd(18, 70));
+    if (/[\s.,!?~]/.test(ch) && Math.random() < 0.15) await sleep(rnd(120, 320));
+    if (i % rnd(35, 60) === 0) await sleep(rnd(300, 850));
+  }
+
+  await humanDelay(400, 900);
+  const len = await editorTextLength(win);
+  return len > 0;
+}
+
 /** 완전자동용 브라우저 창 (계정 세션·프록시·크롬 UA) */
 export async function openAutoWindow(acc: AccountProxy): Promise<BrowserWindow> {
   const ses = await getAccountSession(acc);
@@ -756,8 +875,18 @@ export async function autoOpenAndAnswer(
     if (!hasEditor) return { typed: false, submitted: false, error: '답변 입력칸이 열리지 않음' };
 
     await humanDelay(1000, 2200);
-    const typed = await win.webContents.executeJavaScript(typeJS(answer)).catch(() => false);
-    if (!typed) return { typed: false, submitted: false, error: '답변 입력 실패' };
+
+    // 1순위: 실제 키보드 입력 (iframe 에디터에서 확실히 동작)
+    let typed = await typeIntoEditorHuman(win, answer);
+    if (!typed) {
+      // 2순위: execCommand 주입 폴백
+      await win.webContents.executeJavaScript(typeJS(answer)).catch(() => false);
+      const len = await editorTextLength(win);
+      typed = len > 0;
+    }
+    if (!typed) {
+      return { typed: false, submitted: false, error: '답변이 입력창에 들어가지 않음' };
+    }
     if (!submit) return { typed: true, submitted: false };
 
     await humanDelay(1200, 2400);
