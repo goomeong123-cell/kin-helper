@@ -137,6 +137,16 @@ function setupAutoUpdate() {
     });
 
     autoUpdater.checkForUpdates().catch((e) => console.error('[updater] check failed:', e));
+
+    // 앱을 켜둔 상태로 새 버전이 올라와도 알아서 받도록 주기적으로 확인
+    // (사용자가 [업데이트 확인]을 직접 누르지 않아도 다이얼로그가 자동으로 뜸)
+    setInterval(
+      () => {
+        if (updateState.status === 'downloading' || updateState.status === 'downloaded') return;
+        autoUpdater.checkForUpdates().catch(() => {});
+      },
+      20 * 60 * 1000,
+    );
   } catch (e) {
     console.error('[updater] setup failed:', e);
   }
