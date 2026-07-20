@@ -726,10 +726,11 @@ async function focusEditorPoint(
         const big = (el) => { const r = el.getBoundingClientRect(); return r.width > 20 && r.height > 15; };
         // 지식인 답변창은 SmartEditor ONE — contenteditable 속성이 없고 자체 커서를 그린다.
         // 그래서 SE 전용 선택자까지 포함해서 찾는다.
+        // 실제 글이 들어가는 문단(.se-text-paragraph)을 최우선으로 클릭해야 커서가 잡힌다
         const SEL = [
-          '[contenteditable="true"]',
           '.se-text-paragraph',
           '.se-module-text',
+          '[contenteditable="true"]',
           '.se-section-text',
           '.se-components-wrap',
           '.se-content',
@@ -816,19 +817,65 @@ async function editorTextLength(win: BrowserWindow): Promise<number> {
  * 실제 키보드 입력으로 사람처럼 타이핑.
  * (execCommand는 iframe 안에서 커서가 안 잡히면 조용히 실패하므로, 진짜 키 이벤트를 보낸다)
  */
-export async function typeIntoEditorHuman(win: BrowserWindow, text: string): Promise<boolean> {
+/** SmartEditor 커서가 실제로 잡혔는지 (깜빡이는 캐럿 또는 포커스된 편집영역) */
+async function caretActive(win: BrowserWindow): Promise<boolean> {
+  return await win.webContents
+    .executeJavaScript(
+      `
+      (function () {
+        if (document.querySelector('.se-caret.se-is-caret-blinking, .se-is-focused')) return true;
+        const a = document.activeElement;
+        if (a && (a.isContentEditable || a.tagName === 'TEXTAREA')) return true;
+        for (const f of document.querySelectorAll('iframe')) {
+          try {
+            const d = f.contentDocument; if (!d) continue;
+            if (d.querySelector('.se-caret.se-is-caret-blinking, .se-is-focused')) return true;
+            const b = d.activeElement;
+            if (b && (b.isContentEditable || b.tagName === 'TEXTAREA')) return true;
+          } catch (e) {}
+        }
+        return false;
+      })();
+    `,
+    )
+    .catch(() => false);
+}
+
+export async function typeIntoEditorHuman(
+  win: BrowserWindow,
+  text: string,
+): Promise<{ ok: boolean; detail: string }> {
+  // 입력 전 글자 수를 기준으로 삼는다.
+  // (에디터 안내문도 .se-text-paragraph 안에 있어서, 단순 '글자 있음' 판정은 속는다)
+  const before = await editorTextLength(win);
+
   const pt = await focusEditorPoint(win);
-  if (!pt) return false;
+  if (!pt) return { ok: false, detail: '에디터 위치를 찾지 못함' };
+
+  const click = (x: number, y: number) => {
+    try {
+      win.webContents.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
+      win.webContents.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
+    } catch {
+      // ignore
+    }
+  };
 
   try {
     win.focus();
-    // 에디터를 실제로 클릭해서 커서 잡기
-    win.webContents.sendInputEvent({ type: 'mouseDown', x: pt.x, y: pt.y, button: 'left', clickCount: 1 });
-    win.webContents.sendInputEvent({ type: 'mouseUp', x: pt.x, y: pt.y, button: 'left', clickCount: 1 });
+    click(pt.x, pt.y);
   } catch {
     // ignore
   }
   await humanDelay(500, 1000);
+
+  // 커서가 안 잡혔으면 살짝 아래를 한 번 더 클릭
+  let caret = await caretActive(win);
+  if (!caret) {
+    click(pt.x, pt.y + 30);
+    await humanDelay(400, 800);
+    caret = await caretActive(win);
+  }
 
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const rnd = (a: number, b: number) => a + Math.floor(Math.random() * (b - a));
@@ -843,7 +890,7 @@ export async function typeIntoEditorHuman(win: BrowserWindow, text: string): Pro
     }
   };
 
-  // 먼저 몇 글자만 보내서 실제로 들어가는지 확인 (허공에 300자 치는 것 방지)
+  // 먼저 몇 글자만 보내서 '입력 전보다 늘었는지' 확인 (허공에 300자 치는 것 방지)
   const probe = text.slice(0, 3);
   try {
     for (const ch of probe) {
@@ -855,26 +902,32 @@ export async function typeIntoEditorHuman(win: BrowserWindow, text: string): Pro
   }
   await humanDelay(400, 800);
 
-  if ((await editorTextLength(win)) === 0) {
+  if ((await editorTextLength(win)) <= before) {
     // 키 입력을 안 받는 에디터 → 클립보드 붙여넣기로 확실하게 입력
     try {
       clipboard.writeText(text);
       win.webContents.paste();
-      await humanDelay(700, 1300);
-      return (await editorTextLength(win)) > 0;
+      await humanDelay(900, 1600);
+      const after = await editorTextLength(win);
+      return after > before
+        ? { ok: true, detail: '붙여넣기로 입력됨' }
+        : {
+            ok: false,
+            detail: `입력 실패 (전 ${before}자 → 후 ${after}자, 커서 ${caret ? '있음' : '없음'})`,
+          };
     } catch {
-      return false;
+      return { ok: false, detail: '붙여넣기 실패' };
     }
   }
 
   // 키 입력이 먹으므로 나머지를 사람처럼 한 글자씩
   let i = 0;
   for (const ch of text.slice(probe.length)) {
-    if (win.isDestroyed()) return false;
+    if (win.isDestroyed()) return { ok: false, detail: '창이 닫힘' };
     try {
       sendChar(ch);
     } catch {
-      return false;
+      return { ok: false, detail: '키 입력 중 오류' };
     }
     i++;
     await sleep(rnd(18, 70));
@@ -883,7 +936,10 @@ export async function typeIntoEditorHuman(win: BrowserWindow, text: string): Pro
   }
 
   await humanDelay(400, 900);
-  return (await editorTextLength(win)) > 0;
+  const final = await editorTextLength(win);
+  return final > before
+    ? { ok: true, detail: `타이핑 입력됨 (${final - before}자)` }
+    : { ok: false, detail: `입력 확인 실패 (전 ${before}자 → 후 ${final}자)` };
 }
 
 /** 완전자동용 브라우저 창 (계정 세션·프록시·크롬 UA) */
@@ -995,16 +1051,20 @@ export async function autoOpenAndAnswer(
 
     await humanDelay(1000, 2200);
 
-    // 1순위: 실제 키보드 입력 (iframe 에디터에서 확실히 동작)
-    let typed = await typeIntoEditorHuman(win, answer);
+    // 1순위: 실제 키보드 입력 (iframe/SmartEditor에서 확실히 동작)
+    const before = await editorTextLength(win);
+    const r = await typeIntoEditorHuman(win, answer);
+    let typed = r.ok;
+    let detail = r.detail;
     if (!typed) {
       // 2순위: execCommand 주입 폴백
       await win.webContents.executeJavaScript(typeJS(answer)).catch(() => false);
       const len = await editorTextLength(win);
-      typed = len > 0;
+      typed = len > before;
+      if (typed) detail = 'execCommand 폴백으로 입력됨';
     }
     if (!typed) {
-      return { typed: false, submitted: false, error: '답변이 입력창에 들어가지 않음' };
+      return { typed: false, submitted: false, error: `답변이 입력창에 들어가지 않음 — ${detail}` };
     }
     if (!submit) return { typed: true, submitted: false };
 
