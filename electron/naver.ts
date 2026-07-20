@@ -745,18 +745,35 @@ async function focusEditorPoint(
           return null;
         };
 
-        let target = findIn(document), offX = 0, offY = 0, doc = document;
+        // 1순위: 모든 프레임에서 contenteditable 을 먼저 찾는다.
+        // (지식인 SmartEditor의 실제 입력 대상은 iframe 안의 body[contenteditable]이며
+        //  크기가 0이거나 화면 밖일 수 있으므로 크기 필터를 적용하면 안 된다)
+        let target = null, offX = 0, offY = 0, doc = document;
+        const topCE = document.querySelector('[contenteditable="true"]');
+        if (topCE) target = topCE;
         if (!target) {
           for (const f of document.querySelectorAll('iframe')) {
             try {
               const d = f.contentDocument; if (!d) continue;
-              const fr = f.getBoundingClientRect(); if (fr.width < 50 || fr.height < 50) continue;
-              const el = findIn(d) || ((d.body && d.body.isContentEditable) ? d.body : null);
-              if (el) { target = el; doc = d; offX = fr.left; offY = fr.top; try { f.contentWindow.focus(); } catch (e) {} break; }
+              const ce = d.querySelector('[contenteditable="true"]')
+                || ((d.body && d.body.isContentEditable) ? d.body : null);
+              if (ce) {
+                target = ce; doc = d;
+                const fr = f.getBoundingClientRect(); offX = fr.left; offY = fr.top;
+                try { f.contentWindow.focus(); } catch (e) {}
+                try { ce.focus(); } catch (e) {}
+                break;
+              }
             } catch (e) {}
           }
         }
+        // 2순위: contenteditable 이 없으면 SmartEditor 시각 요소
+        if (!target) target = findIn(document);
         if (!target) return null;
+
+        // 클릭 좌표는 '보이는' 편집영역 기준으로 잡는다 (실제 입력 대상이 숨겨져 있을 수 있음)
+        let clickEl = document.querySelector('.se-text-paragraph, .se-module-text, .se-section-text');
+        if (!clickEl || clickEl.getBoundingClientRect().height < 5) clickEl = null;
 
         // 이 답변칸만 정확히 측정하기 위해 표시를 남긴다 (질문 본문도 같은 SE 마크업이라 페이지 전체 합산은 오염됨)
         try {
@@ -778,6 +795,14 @@ async function focusEditorPoint(
           }
         } catch (e) {}
 
+        // 보이는 편집영역이 있으면 그 좌표를, 없으면 대상 요소 좌표를 클릭 지점으로
+        if (clickEl) {
+          const c = clickEl.getBoundingClientRect();
+          return {
+            x: Math.round(c.left + Math.min(Math.max(c.width / 2, 30), 220)),
+            y: Math.round(c.top + Math.min(Math.max(c.height / 2, 10), 30)),
+          };
+        }
         const b = target.getBoundingClientRect();
         return {
           x: Math.round(offX + b.left + Math.min(Math.max(b.width / 2, 30), 220)),
@@ -847,7 +872,10 @@ async function caretActive(win: BrowserWindow): Promise<boolean> {
     .executeJavaScript(
       `
       (function () {
-        if (document.querySelector('.se-caret.se-is-caret-blinking, .se-is-focused')) return true;
+        // 가장 정확한 신호: 선택영역이 .se-is-blurred 면 포커스가 풀린 것 (se-is-focused 는 잔여 클래스라 못 믿음)
+        const sel = document.querySelector('.se-selection');
+        if (sel) return !sel.classList.contains('se-is-blurred');
+        if (document.querySelector('.se-caret.se-is-caret-blinking')) return true;
         const a = document.activeElement;
         if (a && (a.isContentEditable || a.tagName === 'TEXTAREA')) return true;
         for (const f of document.querySelectorAll('iframe')) {
@@ -886,17 +914,26 @@ export async function typeIntoEditorHuman(
   };
 
   try {
+    // 창과 웹콘텐츠 모두 포커스를 확실히 준 뒤 클릭해야 에디터가 blur 상태로 남지 않음
+    if (!win.isVisible()) win.show();
     win.focus();
+    win.webContents.focus();
+    await humanDelay(250, 500);
     click(pt.x, pt.y);
   } catch {
     // ignore
   }
   await humanDelay(500, 1000);
 
-  // 커서가 안 잡혔으면 살짝 아래를 한 번 더 클릭
+  // 포커스가 안 잡혔으면 지점을 바꿔가며 재시도
   let caret = await caretActive(win);
-  if (!caret) {
-    click(pt.x, pt.y + 30);
+  for (let i = 0; i < 3 && !caret; i++) {
+    try {
+      win.webContents.focus();
+    } catch {
+      // ignore
+    }
+    click(pt.x, pt.y + i * 18);
     await humanDelay(400, 800);
     caret = await caretActive(win);
   }
