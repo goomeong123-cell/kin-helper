@@ -236,13 +236,13 @@ export function registerIpc(ipcMain: IpcMain) {
     let brand: any = null;
     if (brandId) brand = db().prepare('SELECT * FROM brands WHERE id = ?').get([brandId]);
 
-    // 홍보 포함이 켜져 있고 브랜드에 홍보문구가 있을 때만 홍보 모드
-    const usePromo = !!(includePromo && brand?.promo_text);
-    let promoText: string | undefined;
+    // 홍보 모드: 해당 브랜드에 '홍보용 프롬프트'가 설정돼 있을 때만
+    const brandPromoPrompt = String(brand?.system_prompt || '').trim();
+    const usePromo = !!(includePromo && brandPromoPrompt);
+    const promoText: string | undefined = undefined; // 홍보문구는 폐지 (프롬프트에 제품을 기술)
     let systemPrompt: string;
     if (usePromo) {
-      promoText = brand.promo_text;
-      systemPrompt = getS('promo_prompt') || DEFAULT_PROMO_PROMPT;
+      systemPrompt = brandPromoPrompt;
     } else {
       // 일상글: 공통 일상 프롬프트 (구버전 global_prompt 값도 호환)
       systemPrompt = getS('daily_prompt') || getS('global_prompt') || DEFAULT_DAILY_PROMPT;
@@ -267,7 +267,7 @@ export function registerIpc(ipcMain: IpcMain) {
         `INSERT INTO answers (question_id, brand_id, body, promo_included, mode, status)
          VALUES (?, ?, ?, ?, 'manual', 'draft')`,
       )
-      .run([questionId, brandId ?? null, result.text, promoText ? 1 : 0]);
+      .run([questionId, brandId ?? null, result.text, usePromo ? 1 : 0]);
     const answer = db().prepare('SELECT * FROM answers WHERE id = ?').get([info.lastInsertRowid]);
     return { ok: true, answer };
   }
@@ -304,9 +304,9 @@ export function registerIpc(ipcMain: IpcMain) {
         let includePromo = false;
         if (q.matched_brand_id) {
           const b = db()
-            .prepare('SELECT promo_text FROM brands WHERE id = ?')
+            .prepare('SELECT system_prompt FROM brands WHERE id = ?')
             .get([q.matched_brand_id]) as any;
-          if (b?.promo_text) includePromo = Math.random() * 100 < ratio;
+          if (b?.system_prompt && String(b.system_prompt).trim()) includePromo = Math.random() * 100 < ratio;
         }
         const r = await doGenerate(qid, q.matched_brand_id ?? undefined, includePromo);
         if (r.ok) done++;
@@ -507,7 +507,7 @@ export function registerIpc(ipcMain: IpcMain) {
     return true;
   });
 
-  ipcMain.handle('auto:start', async (_e, opts: { accountId: number; submit: boolean }) => {
+  ipcMain.handle('auto:start', async (_e, opts: { accountId: number; submit: boolean; brandId?: number }) => {
     if (autoRunning) return { ok: false, error: '이미 실행 중입니다.' };
     const acc = db().prepare('SELECT * FROM accounts WHERE id = ?').get([opts.accountId]) as any;
     if (!acc) return { ok: false, error: '계정을 찾을 수 없습니다.' };
@@ -518,7 +518,7 @@ export function registerIpc(ipcMain: IpcMain) {
     autoStop = false;
     autoCount = 0;
     pushLog('시작 중…');
-    runAutopilot(opts.accountId, opts.submit)
+    runAutopilot(opts.accountId, opts.submit, opts.brandId)
       .catch((e) => {
         pushLog('오류: ' + (e instanceof Error ? e.message : String(e)));
       })
@@ -537,7 +537,7 @@ export function registerIpc(ipcMain: IpcMain) {
     return { ok: true };
   });
 
-  async function runAutopilot(accountId: number, submit: boolean) {
+  async function runAutopilot(accountId: number, submit: boolean, onlyBrandId?: number) {
     const acc = db().prepare('SELECT * FROM accounts WHERE id = ?').get([accountId]) as any;
     const proxy = accountToProxy(acc);
     const ratio = Number(getS('promo_ratio') || '20');
@@ -578,9 +578,15 @@ export function registerIpc(ipcMain: IpcMain) {
       let brandId: number | undefined;
       const wantPromo = Math.random() * 100 < ratio;
       if (wantPromo) {
-        const brandsWithPromo = db()
-          .prepare("SELECT * FROM brands WHERE promo_text IS NOT NULL AND promo_text != ''")
-          .all() as any[];
+        const brandsWithPromo = (
+          onlyBrandId
+            ? (db()
+                .prepare("SELECT * FROM brands WHERE id = ? AND system_prompt IS NOT NULL AND TRIM(system_prompt) != ''")
+                .all([onlyBrandId]) as any[])
+            : (db()
+                .prepare("SELECT * FROM brands WHERE system_prompt IS NOT NULL AND TRIM(system_prompt) != ''")
+                .all() as any[])
+        );
         if (brandsWithPromo.length) {
           const b = brandsWithPromo[Math.floor(Math.random() * brandsWithPromo.length)];
           const kws = db().prepare('SELECT keyword FROM keywords WHERE brand_id=?').all([b.id]) as any[];

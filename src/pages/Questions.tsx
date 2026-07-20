@@ -104,7 +104,12 @@ export default function Questions() {
       toast('등록 계정을 먼저 선택하세요.');
       return;
     }
-    const res = await window.api.auto.start({ accountId, submit: autoSubmit });
+    const res = await window.api.auto.start({
+      accountId,
+      submit: autoSubmit,
+      // 브랜드 탭을 고르면 홍보는 그 브랜드만 사용 ('전체'면 홍보 브랜드 중 랜덤)
+      brandId: activeBrand === 'all' ? undefined : activeBrand,
+    });
     if (!res.ok) toast(res.error || '시작 실패');
     else {
       toast('완전자동 시작 — 브라우저가 열립니다');

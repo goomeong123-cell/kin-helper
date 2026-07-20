@@ -6,17 +6,11 @@ const DEFAULT_DAILY =
   '전문성은 있되 절대 딱딱하거나 AI 같지 않게, 실제 사람이 편하게 도와주듯 자연스럽게 답하세요.\n' +
   '과장·상투구·불필요한 인사말을 피하고, 질문에 실질적으로 도움이 되는 내용을 담으세요.';
 
-const DEFAULT_PROMO =
-  '당신은 특정 분야에 경험이 있는 평범한 사람입니다. 네이버 지식인 질문에 진짜 도움이 되는 답변을 씁니다.\n' +
-  '답변의 대부분은 순수하게 도움되는 내용이어야 하고, 정말 맥락에 맞을 때에만 제공된 제품을 경험담처럼 딱 한 번 자연스럽게 언급하세요.\n' +
-  '광고 티·과장·링크 나열·상투구는 절대 금지. 억지스러우면 제품을 아예 빼세요. 사람이 직접 쓴 것처럼 편하게.';
-
 export default function Settings() {
   const toast = useToast();
   const [apiKey, setApiKey] = useState('');
   const [model, setModel] = useState('claude-opus-4-8');
   const [dailyPrompt, setDailyPrompt] = useState('');
-  const [promoPrompt, setPromoPrompt] = useState('');
   const [promoRatio, setPromoRatio] = useState(20);
   const [minInt, setMinInt] = useState(90);
   const [maxInt, setMaxInt] = useState(240);
@@ -31,7 +25,6 @@ export default function Settings() {
         (await window.api.settings.get('global_prompt')) ||
         '';
       setDailyPrompt(daily);
-      setPromoPrompt((await window.api.settings.get('promo_prompt')) || '');
       const r = await window.api.settings.get('promo_ratio');
       setPromoRatio(r ? Number(r) : 20);
       const mn = await window.api.settings.get('auto_min_interval');
@@ -45,7 +38,6 @@ export default function Settings() {
     await window.api.settings.set('claude_api_key', apiKey.trim());
     await window.api.settings.set('claude_model', model);
     await window.api.settings.set('daily_prompt', dailyPrompt);
-    await window.api.settings.set('promo_prompt', promoPrompt);
     await window.api.settings.set('promo_ratio', String(promoRatio));
     await window.api.settings.set('auto_min_interval', String(minInt));
     await window.api.settings.set('auto_max_interval', String(Math.max(minInt, maxInt)));
@@ -164,22 +156,6 @@ export default function Settings() {
         </button>
       </div>
 
-      <div className="card">
-        <label className="label">홍보용 프롬프트 (공통)</label>
-        <div className="page-sub" style={{ marginBottom: 8 }}>
-          제품 홍보를 섞는 답변에 쓰입니다. 브랜드 탭의 “홍보문구(제품 정보)”가 이 프롬프트와 함께 전달됩니다.
-        </div>
-        <textarea
-          className="field"
-          rows={6}
-          placeholder={DEFAULT_PROMO}
-          value={promoPrompt}
-          onChange={(e) => setPromoPrompt(e.target.value)}
-        />
-        <button className="btn sm ghost" style={{ marginTop: 8 }} onClick={() => setPromoPrompt(DEFAULT_PROMO)}>
-          기본값 채우기
-        </button>
-      </div>
 
       <button className="btn primary" onClick={save}>
         저장

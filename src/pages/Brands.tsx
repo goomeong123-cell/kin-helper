@@ -78,7 +78,8 @@ export default function Brands() {
 
 function BrandEditor({ brand, onChange }: { brand: Brand; onChange: () => void }) {
   const toast = useToast();
-  const [promoText, setPromoText] = useState(brand.promo_text || '');
+  // 홍보용 프롬프트 (기존 홍보문구가 있으면 초안으로 살려둠)
+  const [promoPrompt, setPromoPrompt] = useState(brand.system_prompt || brand.promo_text || '');
   const [image, setImage] = useState<string | null>(brand.promo_image);
   const [keywords, setKeywords] = useState<Keyword[]>([]);
   const [newKw, setNewKw] = useState('');
@@ -94,7 +95,7 @@ function BrandEditor({ brand, onChange }: { brand: Brand; onChange: () => void }
 
   async function save() {
     await window.api.brands.update(brand.id, {
-      promo_text: promoText,
+      system_prompt: promoPrompt,
       promo_image: image ?? '',
     });
     toast('저장됨');
@@ -128,16 +129,22 @@ function BrandEditor({ brand, onChange }: { brand: Brand; onChange: () => void }
   return (
     <>
       <div className="card">
-        <label className="label">홍보문구 (제품 정보)</label>
+        <label className="label">홍보용 프롬프트 (이 브랜드 전용)</label>
         <div className="page-sub" style={{ marginBottom: 8 }}>
-          답변에 실제로 녹여넣을 제품 이야기입니다. 문체는 설정의 “홍보용 프롬프트”가 담당하고, 여기엔 무엇을 말할지(제품)만 적으세요.
+          이 브랜드로 홍보 답변을 쓸 때 Claude에게 주는 지시문입니다. <b>어떤 제품을 어떻게 홍보할지 여기에 직접 적으세요.</b>
+          <br />
+          비워두면 이 브랜드는 <b>홍보 대상에서 제외</b>되고, 완전자동에서도 선택되지 않습니다.
         </div>
         <textarea
           className="field"
-          placeholder="예: 저도 노트북 발열 심했는데 OO 쿨링패드 쓰고 확실히 잡혔어요. 3단 각도 조절되고 소음도 거의 없어요."
-          value={promoText}
-          onChange={(e) => setPromoText(e.target.value)}
-          rows={4}
+          placeholder={
+            '예) 너는 노트북을 오래 써온 평범한 직장인이다. 질문에 진짜 도움되는 답을 먼저 충분히 쓰고,\n' +
+            '맥락이 맞을 때만 "OO 쿨링패드"를 경험담처럼 딱 한 번 자연스럽게 언급해라.\n' +
+            '광고 티, 과장, 링크 나열 금지. 억지스러우면 제품은 아예 빼라.'
+          }
+          value={promoPrompt}
+          onChange={(e) => setPromoPrompt(e.target.value)}
+          rows={7}
         />
         <div style={{ height: 16 }} />
         <label className="label">홍보 이미지 (선택)</label>
