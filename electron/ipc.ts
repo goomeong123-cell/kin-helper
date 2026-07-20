@@ -522,13 +522,14 @@ export function registerIpc(ipcMain: IpcMain) {
 
     // 1~2단계: 네이버 접속 후 로그인 상태 확인 (비밀번호 자동입력은 하지 않음)
     pushLog('네이버 접속 · 로그인 상태 확인 중…');
-    const loggedIn = await autoIsLoggedIn(autoWin);
+    const login = await autoIsLoggedIn(autoWin);
     if (autoStop) return;
-    if (!loggedIn) {
-      pushLog('❌ 로그인이 안 된 계정입니다. [계정·프록시] 탭에서 로그인 창으로 1회 로그인 후 다시 시작하세요.');
+    if (!login.ok) {
+      pushLog(`❌ 로그인 안 됨 (${login.detail})`);
+      pushLog('→ [계정·프록시] 탭에서 이 계정의 [로그인 창]으로 로그인 후 다시 시작하세요.');
       return;
     }
-    pushLog('로그인 확인됨 ✓');
+    pushLog(`로그인 확인됨 ✓ (${login.detail})`);
 
     while (!autoStop) {
       if (!autoWin || autoWin.isDestroyed()) break;

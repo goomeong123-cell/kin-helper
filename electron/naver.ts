@@ -461,28 +461,37 @@ function typeJS(answer: string): string {
   `;
 }
 
-/** 네이버 로그인 상태 확인 (로그아웃이면 로그인 링크가 보임) */
-export async function autoIsLoggedIn(win: BrowserWindow): Promise<boolean> {
+/**
+ * 네이버 로그인 상태 확인.
+ * 페이지 HTML 모양은 로그인 상태에서도 로그인 링크가 남거나 늦게 렌더되어 오판하므로,
+ * 세션의 네이버 로그인 쿠키(NID_AUT / NID_SES)를 직접 확인한다. (httpOnly 포함해 조회됨)
+ */
+export async function autoIsLoggedIn(win: BrowserWindow): Promise<{ ok: boolean; detail: string }> {
   try {
     await win.loadURL('https://www.naver.com/');
-    await humanDelay(1200, 2200);
-    return await win.webContents
+    await humanDelay(1500, 2600);
+
+    const ses = win.webContents.session;
+    const cookies = await ses.cookies.get({ domain: '.naver.com' }).catch(() => []);
+    const names = new Set(cookies.map((c) => c.name));
+    const hasAuth = names.has('NID_AUT');
+    const hasSes = names.has('NID_SES');
+    if (hasAuth && hasSes) return { ok: true, detail: `쿠키 확인(NID_AUT/NID_SES)` };
+
+    // 보조 확인: 페이지에서 로그아웃 링크가 보이면 로그인된 것으로 간주
+    const domLoggedIn = await win.webContents
       .executeJavaScript(
-        `
-        (function () {
-          // 로그아웃 상태: 로그인 버튼/링크 존재
-          const loginLink = document.querySelector('a[href*="nid.naver.com/nidlogin.login"], .link_login');
-          // 로그인 상태: 로그아웃 링크 또는 내 정보 영역 존재
-          const logoutLink = document.querySelector('a[href*="nid.naver.com/nidlogin.logout"], .link_logout');
-          if (logoutLink) return true;
-          if (loginLink) return false;
-          return true;
-        })();
-      `,
+        `!!document.querySelector('a[href*="nidlogin.logout"], .link_logout, .MyView-module__link_logout___bsTOJ');`,
       )
       .catch(() => false);
-  } catch {
-    return false;
+    if (domLoggedIn) return { ok: true, detail: '페이지에서 로그아웃 링크 확인' };
+
+    return {
+      ok: false,
+      detail: `네이버 쿠키 ${cookies.length}개, NID_AUT=${hasAuth}, NID_SES=${hasSes}`,
+    };
+  } catch (e) {
+    return { ok: false, detail: e instanceof Error ? e.message : String(e) };
   }
 }
 
