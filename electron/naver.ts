@@ -726,11 +726,12 @@ async function focusEditorPoint(
         const big = (el) => { const r = el.getBoundingClientRect(); return r.width > 20 && r.height > 15; };
         // 지식인 답변창은 SmartEditor ONE — contenteditable 속성이 없고 자체 커서를 그린다.
         // 그래서 SE 전용 선택자까지 포함해서 찾는다.
-        // 실제 글이 들어가는 문단(.se-text-paragraph)을 최우선으로 클릭해야 커서가 잡힌다
+        // 실제 키 입력을 받는 건 contenteditable 요소다. (v0.4.4에서 .se-text-paragraph를
+        // 1순위로 바꿨다가 포커스가 안 잡혀 입력이 전부 실패했음 — 성공하던 순서로 복구)
         const SEL = [
+          '[contenteditable="true"]',
           '.se-text-paragraph',
           '.se-module-text',
-          '[contenteditable="true"]',
           '.se-section-text',
           '.se-components-wrap',
           '.se-content',
@@ -795,16 +796,28 @@ async function editorTextLength(win: BrowserWindow): Promise<number> {
     .executeJavaScript(
       `
       (function () {
+        // 가장 확실한 신호: SmartEditor는 입력칸이 비면 .se-is-empty 를 붙이고, 글이 들어가면 뗀다.
+        const unit = document.querySelector('.se-module-text.__se-unit')
+          || document.querySelector('.se-module-text');
+        if (unit) return unit.classList.contains('se-is-empty') ? 0 : 1;
+
+        // SmartEditor 안내문(.se-placeholder)은 실제 입력이 아니므로 반드시 제외한다.
+        const textOf = (el) => {
+          if (!el) return 0;
+          const clone = el.cloneNode(true);
+          clone.querySelectorAll('.se-placeholder, .__se_placeholder').forEach((p) => p.remove());
+          return (clone.innerText || clone.textContent || '').replace(/\\u200B/g, '').trim().length;
+        };
         const readIn = (root) => {
           // 표시해둔 답변칸이 있으면 그것만 측정 (질문 본문 오염 방지)
           const marked = root.querySelector('[data-kin-editor="1"]');
-          if (marked) return (marked.innerText || marked.textContent || '').replace(/\\u200B/g, '').trim().length;
-          // SmartEditor: 입력된 텍스트는 .__se-node / .se-text-paragraph 안에 들어감
-          const se = root.querySelectorAll('.__se-node, .se-text-paragraph');
+          if (marked) return textOf(marked);
+          // 입력된 실제 텍스트는 .__se-node 안에 들어감 (안내문 span 은 제외됨)
+          const se = root.querySelectorAll('.__se-node');
           if (se.length) {
-            let s = '';
-            se.forEach((n) => { s += (n.innerText || n.textContent || ''); });
-            return s.replace(/\\u200B/g, '').trim().length;
+            let n = 0;
+            se.forEach((x) => { n += textOf(x); });
+            return n;
           }
           const ce = root.querySelector('[contenteditable="true"]');
           if (ce) return (ce.innerText || ce.textContent || '').trim().length;
