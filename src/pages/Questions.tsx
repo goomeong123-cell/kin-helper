@@ -152,6 +152,35 @@ export default function Questions() {
     setQuestions((prev) => prev.filter((x) => x.id !== q.id));
   }
 
+  async function removeOne(q: Question) {
+    const res = await window.api.questions.remove(q.id);
+    if (!res.ok) {
+      toast(res.error || '삭제 실패');
+      return;
+    }
+    setQuestions((prev) => prev.filter((x) => x.id !== q.id));
+    setAnswersByQ((prev) => {
+      const next = { ...prev };
+      delete next[q.id];
+      return next;
+    });
+  }
+
+  async function clearAll() {
+    const where = activeBrand === 'all' ? '전체' : brands.find((b) => b.id === activeBrand)?.name;
+    if (
+      !confirm(
+        `[${where}] 수집한 질문을 모두 삭제할까요?\n\n· 아직 등록하지 않은 질문만 삭제됩니다.\n· 이미 등록한 답변 이력은 그대로 보존됩니다.`,
+      )
+    )
+      return;
+    const res = await window.api.questions.clearCollected({
+      brandId: activeBrand === 'all' ? undefined : activeBrand,
+    });
+    toast(`${res.deleted}건 삭제됨`);
+    await refresh();
+  }
+
   const pending = questions.filter((q) => !answersByQ[q.id]).length;
 
   return (
@@ -172,6 +201,14 @@ export default function Questions() {
             title="답변이 없는 질문 전체에 답변을 생성합니다"
           >
             {genAll ? <span className="spinner" /> : `전체 답변 생성${pending ? ` (${pending})` : ''}`}
+          </button>
+          <button
+            className="btn danger"
+            onClick={clearAll}
+            disabled={questions.length === 0}
+            title="수집한 질문을 모두 삭제합니다 (등록 이력은 보존)"
+          >
+            수집 글 전체 삭제
           </button>
         </div>
       </div>
@@ -327,6 +364,7 @@ export default function Questions() {
               answer={answersByQ[q.id]}
               onGenerated={(a) => setAnswersByQ((prev) => ({ ...prev, [q.id]: a }))}
               onSkip={() => skip(q)}
+              onRemove={() => removeOne(q)}
               onAnswered={() => setQuestions((prev) => prev.filter((x) => x.id !== q.id))}
             />
           ))}
@@ -344,6 +382,7 @@ function QuestionCard({
   answer,
   onGenerated,
   onSkip,
+  onRemove,
   onAnswered,
 }: {
   q: Question;
@@ -353,6 +392,7 @@ function QuestionCard({
   answer?: Answer;
   onGenerated: (a: Answer) => void;
   onSkip: () => void;
+  onRemove: () => void;
   onAnswered: () => void;
 }) {
   const toast = useToast();
@@ -467,6 +507,9 @@ function QuestionCard({
           </button>
           <button className="btn ghost" onClick={onSkip}>
             건너뛰기
+          </button>
+          <button className="btn sm danger" onClick={onRemove} title="이 질문을 목록에서 삭제">
+            삭제
           </button>
         </div>
       ) : (

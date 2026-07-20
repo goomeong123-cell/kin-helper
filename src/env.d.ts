@@ -83,6 +83,8 @@ export interface Api {
     collect: (opts: { brandId?: number; accountId?: number }) => Promise<{ ok: boolean; inserted: number }>;
     list: (opts: { status?: string; brandId?: number }) => Promise<Question[]>;
     setStatus: (id: number, status: string) => Promise<boolean>;
+    remove: (id: number) => Promise<{ ok: boolean; error?: string }>;
+    clearCollected: (opts: { brandId?: number }) => Promise<{ ok: boolean; deleted: number }>;
   };
   answers: {
     generate: (opts: { questionId: number; brandId?: number; includePromo?: boolean }) => Promise<{ ok: boolean; answer?: Answer; error?: string }>;

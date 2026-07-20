@@ -218,6 +218,31 @@ export function registerIpc(ipcMain: IpcMain) {
     return db().prepare(sql).all(params);
   });
 
+  // 수집한 질문 1건 삭제 (등록 이력이 있는 질문은 보호)
+  ipcMain.handle('questions:remove', (_e, id: number) => {
+    const posted = db()
+      .prepare("SELECT id FROM answers WHERE question_id=? AND status='posted' LIMIT 1")
+      .get([id]);
+    if (posted) {
+      return { ok: false, error: '이미 등록한 답변이 있는 질문이라 삭제하지 않았습니다(이력 보호).' };
+    }
+    db().prepare('DELETE FROM questions WHERE id = ?').run([id]);
+    return { ok: true };
+  });
+
+  // 수집 목록 비우기 — 아직 등록하지 않은 질문만 삭제 (등록 이력은 보존)
+  ipcMain.handle('questions:clearCollected', (_e, opts: { brandId?: number }) => {
+    let sql =
+      "DELETE FROM questions WHERE status='new' AND id NOT IN (SELECT question_id FROM answers WHERE status='posted')";
+    const params: any[] = [];
+    if (opts?.brandId) {
+      sql += ' AND matched_brand_id = ?';
+      params.push(opts.brandId);
+    }
+    const r = db().prepare(sql).run(params);
+    return { ok: true, deleted: r.changes };
+  });
+
   ipcMain.handle('questions:setStatus', (_e, id: number, status: string) => {
     db().prepare('UPDATE questions SET status = ? WHERE id = ?').run([status, id]);
     return true;

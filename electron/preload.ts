@@ -31,6 +31,9 @@ const api = {
       ipcRenderer.invoke('questions:list', opts),
     setStatus: (id: number, status: string) =>
       ipcRenderer.invoke('questions:setStatus', id, status),
+    remove: (id: number) => ipcRenderer.invoke('questions:remove', id),
+    clearCollected: (opts: { brandId?: number }) =>
+      ipcRenderer.invoke('questions:clearCollected', opts),
   },
   answers: {
     generate: (opts: { questionId: number; brandId?: number; includePromo?: boolean }) =>
