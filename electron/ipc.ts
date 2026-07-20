@@ -461,6 +461,18 @@ export function registerIpc(ipcMain: IpcMain) {
   const sleepRnd = (a: number, b: number) =>
     new Promise((r) => setTimeout(r, a + Math.floor(Math.random() * (b - a))));
 
+  // 남은 시간을 초 단위로 보여주며 대기 (중지 누르면 즉시 빠져나옴)
+  const waitWithCountdown = async (ms: number) => {
+    const end = Date.now() + ms;
+    while (!autoStop && Date.now() < end) {
+      const remain = Math.max(0, Math.round((end - Date.now()) / 1000));
+      const m = Math.floor(remain / 60);
+      const s = remain % 60;
+      autoStatus = `다음 질문까지 ${m > 0 ? `${m}분 ` : ''}${s}초 대기…`;
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  };
+
   ipcMain.handle('auto:status', () => ({
     running: autoRunning,
     status: autoStatus,
@@ -648,8 +660,12 @@ export function registerIpc(ipcMain: IpcMain) {
           .run([accountId, new Date().toISOString(), gen.answer.id]);
         db().prepare("UPDATE questions SET status='answered' WHERE id=?").run([qrow.id]);
         autoCount++;
-        pushLog(`등록 완료 (${autoCount}) — 다음까지 대기`);
-        await sleepRnd(90000, 240000); // 사람처럼 1.5~4분 간격
+        // 설정된 간격(기본 90~240초) 안에서 랜덤 대기 — 사람처럼 일정하지 않게
+        const minS = Math.max(5, Number(getS('auto_min_interval') || '90'));
+        const maxS = Math.max(minS, Number(getS('auto_max_interval') || '240'));
+        const waitMs = (minS + Math.random() * (maxS - minS)) * 1000;
+        pushLog(`등록 완료 (${autoCount}) — 다음까지 약 ${Math.round(waitMs / 1000)}초 대기`);
+        await waitWithCountdown(waitMs);
       } else {
         // 관전 모드: 등록 직전 멈춤. 사람이 확인 후 [다음]
         db()

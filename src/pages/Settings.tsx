@@ -18,6 +18,8 @@ export default function Settings() {
   const [dailyPrompt, setDailyPrompt] = useState('');
   const [promoPrompt, setPromoPrompt] = useState('');
   const [promoRatio, setPromoRatio] = useState(20);
+  const [minInt, setMinInt] = useState(90);
+  const [maxInt, setMaxInt] = useState(240);
 
   useEffect(() => {
     (async () => {
@@ -32,6 +34,10 @@ export default function Settings() {
       setPromoPrompt((await window.api.settings.get('promo_prompt')) || '');
       const r = await window.api.settings.get('promo_ratio');
       setPromoRatio(r ? Number(r) : 20);
+      const mn = await window.api.settings.get('auto_min_interval');
+      const mx = await window.api.settings.get('auto_max_interval');
+      setMinInt(mn ? Number(mn) : 90);
+      setMaxInt(mx ? Number(mx) : 240);
     })();
   }, []);
 
@@ -41,6 +47,8 @@ export default function Settings() {
     await window.api.settings.set('daily_prompt', dailyPrompt);
     await window.api.settings.set('promo_prompt', promoPrompt);
     await window.api.settings.set('promo_ratio', String(promoRatio));
+    await window.api.settings.set('auto_min_interval', String(minInt));
+    await window.api.settings.set('auto_max_interval', String(Math.max(minInt, maxInt)));
     toast('설정 저장됨');
   }
 
@@ -100,6 +108,42 @@ export default function Settings() {
               일상 {100 - promoRatio}%
             </span>
           </div>
+        </div>
+      </div>
+
+      <div className="card">
+        <label className="label">완전자동 답변 간격</label>
+        <div className="page-sub" style={{ marginBottom: 12 }}>
+          답변 등록 후 다음 질문까지 기다리는 시간입니다. 이 범위 안에서 <b>매번 랜덤</b>으로 정해집니다(사람처럼 일정하지 않게).
+          <br />
+          너무 짧으면 봇으로 의심받기 쉬우니 <b>90초 이상</b>을 권장합니다.
+        </div>
+        <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+          <div>
+            <label className="label">최소(초)</label>
+            <input
+              className="field"
+              type="number"
+              min={5}
+              style={{ width: 120 }}
+              value={minInt}
+              onChange={(e) => setMinInt(Number(e.target.value))}
+            />
+          </div>
+          <div>
+            <label className="label">최대(초)</label>
+            <input
+              className="field"
+              type="number"
+              min={5}
+              style={{ width: 120 }}
+              value={maxInt}
+              onChange={(e) => setMaxInt(Number(e.target.value))}
+            />
+          </div>
+          <span className="badge blue" style={{ fontSize: 13, alignSelf: 'flex-end', marginBottom: 12 }}>
+            현재: {Math.floor(minInt / 60)}분 {minInt % 60}초 ~ {Math.floor(maxInt / 60)}분 {maxInt % 60}초
+          </span>
         </div>
       </div>
 
