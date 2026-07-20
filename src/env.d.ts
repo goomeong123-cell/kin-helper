@@ -102,6 +102,11 @@ export interface Api {
   app: {
     version: () => Promise<string>;
   };
+  update: {
+    status: () => Promise<{ status: string; version?: string; percent?: number; error?: string }>;
+    check: () => Promise<{ status: string; version?: string; percent?: number; error?: string }>;
+    install: () => Promise<boolean>;
+  };
   auto: {
     start: (opts: { accountId: number; submit: boolean }) => Promise<{ ok: boolean; error?: string }>;
     stop: () => Promise<boolean>;

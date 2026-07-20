@@ -55,6 +55,11 @@ const api = {
   app: {
     version: () => ipcRenderer.invoke('app:version'),
   },
+  update: {
+    status: () => ipcRenderer.invoke('update:status'),
+    check: () => ipcRenderer.invoke('update:check'),
+    install: () => ipcRenderer.invoke('update:install'),
+  },
   auto: {
     start: (opts: { accountId: number; submit: boolean }) => ipcRenderer.invoke('auto:start', opts),
     stop: () => ipcRenderer.invoke('auto:stop'),

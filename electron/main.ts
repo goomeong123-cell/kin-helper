@@ -47,13 +47,56 @@ function createWindow() {
 }
 
 // 자동 업데이트: 다운로드 완료되면 "지금 업데이트할까요?" 물어봄
+type UpdateState = { status: string; version?: string; percent?: number; error?: string };
+let updateState: UpdateState = { status: 'idle' };
+
+function registerUpdateIpc() {
+  // 개발/배포 상관없이 항상 등록 (안 그러면 'No handler' 오류)
+  ipcMain.handle('update:status', () => updateState);
+  ipcMain.handle('update:check', async () => {
+    if (!app.isPackaged) {
+      updateState = { status: 'dev' };
+      return updateState;
+    }
+    try {
+      updateState = { status: 'checking' };
+      await autoUpdater.checkForUpdates();
+    } catch (e) {
+      updateState = { status: 'error', error: e instanceof Error ? e.message : String(e) };
+    }
+    return updateState;
+  });
+  ipcMain.handle('update:install', () => {
+    if (updateState.status === 'downloaded') setImmediate(() => autoUpdater.quitAndInstall());
+    return true;
+  });
+}
+
 function setupAutoUpdate() {
-  if (!app.isPackaged) return; // 개발 모드에서는 동작 안 함
+  registerUpdateIpc();
+  if (!app.isPackaged) {
+    updateState = { status: 'dev' };
+    return; // 개발 모드에서는 자동 업데이트 동작 안 함
+  }
   try {
     autoUpdater.autoDownload = true;
     autoUpdater.autoInstallOnAppQuit = true;
 
+    autoUpdater.on('checking-for-update', () => {
+      updateState = { status: 'checking' };
+    });
+    autoUpdater.on('update-available', (info) => {
+      updateState = { status: 'available', version: info.version };
+    });
+    autoUpdater.on('update-not-available', () => {
+      updateState = { status: 'latest' };
+    });
+    autoUpdater.on('download-progress', (p) => {
+      updateState = { status: 'downloading', percent: Math.round(p.percent || 0) };
+    });
+
     autoUpdater.on('update-downloaded', async (info) => {
+      updateState = { status: 'downloaded', version: info.version };
       if (!alive(win)) return;
       try {
         const { response } = await dialog.showMessageBox(win, {
@@ -74,9 +117,9 @@ function setupAutoUpdate() {
       }
     });
 
-    // 업데이트 확인/다운로드 실패는 앱 사용에 지장 없도록 조용히 무시
     autoUpdater.on('error', (e) => {
       console.error('[updater] error:', e);
+      updateState = { status: 'error', error: e instanceof Error ? e.message : String(e) };
     });
 
     autoUpdater.checkForUpdates().catch((e) => console.error('[updater] check failed:', e));
