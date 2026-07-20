@@ -1,17 +1,7 @@
 import { useEffect, useState } from 'react';
-import type { Account, Answer, Brand, Question, PostMode } from '../env';
+import type { Account, Answer, Brand, Question } from '../env';
 import { useToast } from '../lib/toast';
 
-const MODE_LABEL: Record<PostMode, string> = {
-  manual: '사람 검토',
-  semi: '반자동',
-  auto: '완전 자동',
-};
-const MODE_HINT: Record<PostMode, string> = {
-  manual: '답변을 확인·수정 후 창에서 직접 등록',
-  semi: '에디터에 자동 입력, 등록 버튼만 직접',
-  auto: '입력·등록까지 자동 (정지 위험 큼)',
-};
 
 export default function Questions() {
   const toast = useToast();
@@ -21,7 +11,6 @@ export default function Questions() {
   const [questions, setQuestions] = useState<Question[]>([]);
   // 질문별 최신 초안 — DB에서 로드하므로 탭을 옮겼다 와도 유지됨
   const [answersByQ, setAnswersByQ] = useState<Record<number, Answer>>({});
-  const [mode, setMode] = useState<PostMode>('manual');
   const [accountId, setAccountId] = useState<number | null>(null);
   const [collecting, setCollecting] = useState(false);
   const [promoRatio, setPromoRatio] = useState(20);
@@ -40,6 +29,7 @@ export default function Questions() {
     log: [],
   });
   const [autoSubmit, setAutoSubmit] = useState(false);
+  const [autoTab, setAutoTab] = useState<'full' | 'collect'>('full');
 
   async function loadDrafts() {
     const drafts = await window.api.answers.drafts();
@@ -109,6 +99,8 @@ export default function Questions() {
       submit: autoSubmit,
       // 브랜드 탭을 고르면 홍보는 그 브랜드만 사용 ('전체'면 홍보 브랜드 중 랜덤)
       brandId: activeBrand === 'all' ? undefined : activeBrand,
+      // 수집 발행 탭: 일상글 없이 홍보 질문만 처리
+      promoOnly: autoTab === 'collect',
     });
     if (!res.ok) toast(res.error || '시작 실패');
     else {
@@ -170,18 +162,6 @@ export default function Questions() {
           <div className="page-sub">답변 대기 질문을 수집하고, 자연스러운 답변을 만들어 등록합니다.</div>
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-          <div className="segmented">
-            {(['manual', 'semi', 'auto'] as PostMode[]).map((m) => (
-              <button
-                key={m}
-                className={mode === m ? 'active' : ''}
-                onClick={() => setMode(m)}
-                title={MODE_HINT[m]}
-              >
-                {MODE_LABEL[m]}
-              </button>
-            ))}
-          </div>
           <button className="btn" onClick={collect} disabled={collecting}>
             {collecting ? <span className="spinner" /> : '질문 수집'}
           </button>
@@ -194,11 +174,6 @@ export default function Questions() {
             {genAll ? <span className="spinner" /> : `전체 답변 생성${pending ? ` (${pending})` : ''}`}
           </button>
         </div>
-      </div>
-
-      <div style={{ marginBottom: 6 }} className="page-sub">
-        등록 모드: <b>{MODE_LABEL[mode]}</b> · {MODE_HINT[mode]}
-        {genAll && ' · 전체 생성 진행 중… (다른 탭 가도 계속됩니다)'}
       </div>
 
       {/* 브랜드 탭 */}
@@ -255,11 +230,27 @@ export default function Questions() {
           }}
         >
           <div>
-            <div className="label" style={{ margin: 0 }}>
-              🤖 완전자동
+            <div className="segmented" style={{ marginBottom: 8 }}>
+              <button className={autoTab === 'full' ? 'active' : ''} onClick={() => setAutoTab('full')}>
+                🤖 완전자동
+              </button>
+              <button className={autoTab === 'collect' ? 'active' : ''} onClick={() => setAutoTab('collect')}>
+                🔍 수집 발행
+              </button>
             </div>
             <div className="page-sub" style={{ marginTop: 2 }}>
-              지식인을 자동으로 돌며 홍보(키워드 검색)·일상(최신 답변대기) 질문에 사람처럼 답변합니다.
+              {autoTab === 'full' ? (
+                <>
+                  지식인을 자동으로 돌며 <b>홍보(키워드 검색) + 일상(최신 답변대기)</b> 질문에 비율대로 답변합니다.
+                </>
+              ) : (
+                <>
+                  <b>일상글은 건너뛰고</b>, 브랜드 키워드로 검색한 <b>홍보 대상 질문만</b> 연달아 답변합니다.
+                  {activeBrand === 'all'
+                    ? ' (지금은 전체 — 위 브랜드 탭에서 브랜드를 고르면 그 브랜드만)'
+                    : ''}
+                </>
+              )}
             </div>
           </div>
           <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
@@ -273,7 +264,7 @@ export default function Questions() {
             </div>
             {!auto.running ? (
               <button className="btn primary" onClick={startAuto}>
-                완전자동 시작
+                {autoTab === 'full' ? '완전자동 시작' : '수집 발행 시작'}
               </button>
             ) : (
               <button className="btn danger" onClick={stopAuto}>
@@ -331,7 +322,6 @@ export default function Questions() {
               key={q.id}
               q={q}
               brands={brands}
-              mode={mode}
               accountId={accountId}
               promoRatio={promoRatio}
               answer={answersByQ[q.id]}
@@ -349,7 +339,6 @@ export default function Questions() {
 function QuestionCard({
   q,
   brands,
-  mode,
   accountId,
   promoRatio,
   answer,
@@ -359,7 +348,6 @@ function QuestionCard({
 }: {
   q: Question;
   brands: Brand[];
-  mode: PostMode;
   accountId: number | null;
   promoRatio: number;
   answer?: Answer;
@@ -415,12 +403,12 @@ function QuestionCard({
     setBusy(true);
     try {
       if (body !== answer.body) await window.api.answers.updateBody(answer.id, body);
-      const res = await window.api.answers.post({ answerId: answer.id, accountId, mode });
+      const res = await window.api.answers.post({ answerId: answer.id, accountId, mode: 'auto' });
       if (!res.ok) {
         toast(res.error || '등록 창 열기 실패');
         return;
       }
-      if (mode === 'auto' && res.needsHuman === false) {
+      if (res.needsHuman === false) {
         toast('자동 등록 완료');
         onAnswered();
       } else {
@@ -500,7 +488,7 @@ function QuestionCard({
           )}
           <div className="q-actions">
             <button className="btn primary" onClick={post} disabled={busy}>
-              {busy ? <span className="spinner" /> : `${MODE_LABEL[mode]} 등록`}
+              {busy ? <span className="spinner" /> : '자동 등록'}
             </button>
             <button className="btn" onClick={generate} disabled={busy}>
               다시 생성

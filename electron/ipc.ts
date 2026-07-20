@@ -522,7 +522,7 @@ export function registerIpc(ipcMain: IpcMain) {
     return true;
   });
 
-  ipcMain.handle('auto:start', async (_e, opts: { accountId: number; submit: boolean; brandId?: number }) => {
+  ipcMain.handle('auto:start', async (_e, opts: { accountId: number; submit: boolean; brandId?: number; promoOnly?: boolean }) => {
     if (autoRunning) return { ok: false, error: '이미 실행 중입니다.' };
     const acc = db().prepare('SELECT * FROM accounts WHERE id = ?').get([opts.accountId]) as any;
     if (!acc) return { ok: false, error: '계정을 찾을 수 없습니다.' };
@@ -533,7 +533,7 @@ export function registerIpc(ipcMain: IpcMain) {
     autoStop = false;
     autoCount = 0;
     pushLog('시작 중…');
-    runAutopilot(opts.accountId, opts.submit, opts.brandId)
+    runAutopilot(opts.accountId, opts.submit, opts.brandId, opts.promoOnly)
       .catch((e) => {
         pushLog('오류: ' + (e instanceof Error ? e.message : String(e)));
       })
@@ -552,7 +552,7 @@ export function registerIpc(ipcMain: IpcMain) {
     return { ok: true };
   });
 
-  async function runAutopilot(accountId: number, submit: boolean, onlyBrandId?: number) {
+  async function runAutopilot(accountId: number, submit: boolean, onlyBrandId?: number, promoOnly?: boolean) {
     const acc = db().prepare('SELECT * FROM accounts WHERE id = ?').get([accountId]) as any;
     const proxy = accountToProxy(acc);
     const ratio = Number(getS('promo_ratio') || '20');
@@ -591,7 +591,7 @@ export function registerIpc(ipcMain: IpcMain) {
       // 홍보/일상 결정
       let keyword: string | undefined;
       let brandId: number | undefined;
-      const wantPromo = Math.random() * 100 < ratio;
+      const wantPromo = promoOnly ? true : Math.random() * 100 < ratio;
       if (wantPromo) {
         const brandsWithPromo = (
           onlyBrandId
