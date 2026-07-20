@@ -616,6 +616,15 @@ export function registerIpc(ipcMain: IpcMain) {
         .run([fresh.kinKey, fresh.title, fresh.url, fresh.content || null, '', brandId ?? null, keyword || null]);
       const qrow = db().prepare('SELECT * FROM questions WHERE kin_key=?').get([fresh.kinKey]) as any;
 
+      // 질문 본문을 실제로 가져왔는지 확인해 로그에 남김
+      try {
+        const d = await fetchQuestionDetail(fresh.url);
+        pushLog(
+          `질문 확인: 제목 ${(d.title || fresh.title || '').length}자 / 본문 ${(d.body || fresh.content || '').length}자`,
+        );
+      } catch {
+        // ignore
+      }
       pushLog(`답변 생성 중: ${fresh.title.slice(0, 24)}`);
       const gen = (await doGenerate(qrow.id, brandId, isPromo)) as any;
       if (!gen.ok || !gen.answer) {

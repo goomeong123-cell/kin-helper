@@ -190,12 +190,18 @@ export async function fetchQuestionDetail(
     });
     if (!res.ok) return {};
     const html = await res.text();
-    const titleM = /property="og:title"\s+content="([^"]*)"/i.exec(html);
-    const bodyM = /name="description"\s+content="([^"]*)"/i.exec(html);
-    return {
-      title: titleM ? decodeEntities(titleM[1]).trim() : undefined,
-      body: bodyM ? decodeEntities(bodyM[1]).trim() : undefined,
+    const pick = (re: RegExp) => {
+      const m = re.exec(html);
+      return m ? decodeEntities(m[1]).trim() : '';
     };
+    const title = pick(/property="og:title"\s+content="([^"]*)"/i);
+    // 본문 후보를 여러 곳에서 뽑아 가장 긴 것을 사용
+    const cands = [
+      pick(/name="description"\s+content="([^"]*)"/i),
+      pick(/property="og:description"\s+content="([^"]*)"/i),
+    ].filter(Boolean);
+    const body = cands.sort((a, b) => b.length - a.length)[0] || '';
+    return { title: title || undefined, body: body || undefined };
   } catch {
     return {};
   }

@@ -44,6 +44,20 @@ function createWindow() {
   } else {
     win.loadFile(path.join(RENDERER_DIST, 'index.html'));
   }
+
+  // 메인 창을 닫으면 완전자동 브라우저 등 남은 창까지 모두 닫고 종료한다.
+  // (자동화 창이 남아 있으면 '모든 창 닫힘' 조건이 안 되어 앱이 안 꺼짐)
+  win.on('closed', () => {
+    win = null;
+    for (const w of BrowserWindow.getAllWindows()) {
+      try {
+        if (!w.isDestroyed()) w.destroy();
+      } catch {
+        // ignore
+      }
+    }
+    app.quit();
+  });
 }
 
 // 자동 업데이트: 다운로드 완료되면 "지금 업데이트할까요?" 물어봄
