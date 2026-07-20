@@ -422,6 +422,21 @@ export function registerIpc(ipcMain: IpcMain) {
     return true;
   });
 
+  /* ---------- 프롬프트 테스트 (지식인에 등록하지 않고 출력만 확인) ---------- */
+  ipcMain.handle(
+    'prompts:test',
+    async (_e, opts: { prompt: string; questionTitle: string; questionBody?: string }) => {
+      const systemPrompt = (opts.prompt || '').trim() || DEFAULT_DAILY_PROMPT;
+      const title = (opts.questionTitle || '').trim();
+      if (!title) return { ok: false, error: '테스트할 질문 제목을 입력하세요.' };
+      return generateAnswer({
+        systemPrompt,
+        questionTitle: title,
+        questionBody: opts.questionBody || '',
+      });
+    },
+  );
+
   /* ---------- 앱 정보 ---------- */
   ipcMain.handle('app:version', () => app.getVersion());
 

@@ -52,6 +52,10 @@ const api = {
     get: (key: string) => ipcRenderer.invoke('settings:get', key),
     set: (key: string, value: string) => ipcRenderer.invoke('settings:set', key, value),
   },
+  prompts: {
+    test: (opts: { prompt: string; questionTitle: string; questionBody?: string }) =>
+      ipcRenderer.invoke('prompts:test', opts),
+  },
   app: {
     version: () => ipcRenderer.invoke('app:version'),
   },

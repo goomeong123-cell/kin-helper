@@ -83,6 +83,11 @@ function BrandEditor({ brand, onChange }: { brand: Brand; onChange: () => void }
   const [image, setImage] = useState<string | null>(brand.promo_image);
   const [keywords, setKeywords] = useState<Keyword[]>([]);
   const [newKw, setNewKw] = useState('');
+  // 프롬프트 테스트
+  const [testQ, setTestQ] = useState('');
+  const [testBody, setTestBody] = useState('');
+  const [testOut, setTestOut] = useState('');
+  const [testing, setTesting] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   async function loadKw() {
@@ -118,6 +123,26 @@ function BrandEditor({ brand, onChange }: { brand: Brand; onChange: () => void }
     const reader = new FileReader();
     reader.onload = () => setImage(String(reader.result));
     reader.readAsDataURL(f);
+  }
+
+  async function runTest() {
+    if (!testQ.trim()) {
+      toast('테스트할 질문을 입력하세요.');
+      return;
+    }
+    setTesting(true);
+    setTestOut('');
+    try {
+      const res = await window.api.prompts.test({
+        prompt: promoPrompt, // 저장 안 해도 지금 입력창의 프롬프트로 바로 테스트
+        questionTitle: testQ.trim(),
+        questionBody: testBody.trim(),
+      });
+      if (!res.ok) toast(res.error || '테스트 실패');
+      setTestOut(res.text || '');
+    } finally {
+      setTesting(false);
+    }
   }
 
   async function del() {
@@ -174,6 +199,48 @@ function BrandEditor({ brand, onChange }: { brand: Brand; onChange: () => void }
             브랜드 삭제
           </button>
         </div>
+      </div>
+
+      <div className="card">
+        <label className="label">🧪 프롬프트 테스트</label>
+        <div className="page-sub" style={{ marginBottom: 10 }}>
+          위 홍보용 프롬프트로 <b>실제 어떤 답변이 나오는지</b> 미리 확인합니다. 지식인에 등록되지 않으니 마음껏 테스트하세요.
+          <br />
+          저장 안 해도 <b>지금 입력창의 프롬프트</b>로 바로 테스트됩니다.
+        </div>
+        <label className="label">테스트할 질문 제목</label>
+        <input
+          className="field"
+          placeholder="예: 노트북 발열이 너무 심한데 어떻게 해야 하나요?"
+          value={testQ}
+          onChange={(e) => setTestQ(e.target.value)}
+        />
+        <div style={{ height: 10 }} />
+        <label className="label">질문 본문 (선택)</label>
+        <textarea
+          className="field"
+          rows={3}
+          placeholder="비워두면 제목만으로 답변을 생성합니다 (실제 지식인엔 제목만 있는 질문도 많아요)"
+          value={testBody}
+          onChange={(e) => setTestBody(e.target.value)}
+        />
+        <div style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
+          <button className="btn primary" onClick={runTest} disabled={testing}>
+            {testing ? <span className="spinner" /> : '테스트 실행'}
+          </button>
+          {testOut && (
+            <button className="btn sm ghost" onClick={() => setTestOut('')}>
+              결과 지우기
+            </button>
+          )}
+        </div>
+        {testOut && (
+          <>
+            <div style={{ height: 14 }} />
+            <label className="label">생성된 답변 ({testOut.length}자)</label>
+            <div className="answer-box">{testOut}</div>
+          </>
+        )}
       </div>
 
       <div className="card">

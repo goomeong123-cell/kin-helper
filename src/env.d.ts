@@ -99,6 +99,13 @@ export interface Api {
     get: (key: string) => Promise<string | null>;
     set: (key: string, value: string) => Promise<boolean>;
   };
+  prompts: {
+    test: (opts: { prompt: string; questionTitle: string; questionBody?: string }) => Promise<{
+      ok: boolean;
+      text?: string;
+      error?: string;
+    }>;
+  };
   app: {
     version: () => Promise<string>;
   };
