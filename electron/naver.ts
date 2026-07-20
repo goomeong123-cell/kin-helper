@@ -757,6 +757,14 @@ async function focusEditorPoint(
         }
         if (!target) return null;
 
+        // 이 답변칸만 정확히 측정하기 위해 표시를 남긴다 (질문 본문도 같은 SE 마크업이라 페이지 전체 합산은 오염됨)
+        try {
+          const doc0 = target.ownerDocument;
+          doc0.querySelectorAll('[data-kin-editor]').forEach((n) => n.removeAttribute('data-kin-editor'));
+          const box = target.closest('.se-module-text, .se-section-text, .se-component-content') || target;
+          box.setAttribute('data-kin-editor', '1');
+        } catch (e) {}
+
         try { target.focus(); } catch (e) {}
         // 네이티브 contenteditable이면 캐럿도 잡아둔다 (SE는 클릭으로 잡힘)
         try {
@@ -788,6 +796,9 @@ async function editorTextLength(win: BrowserWindow): Promise<number> {
       `
       (function () {
         const readIn = (root) => {
+          // 표시해둔 답변칸이 있으면 그것만 측정 (질문 본문 오염 방지)
+          const marked = root.querySelector('[data-kin-editor="1"]');
+          if (marked) return (marked.innerText || marked.textContent || '').replace(/\\u200B/g, '').trim().length;
           // SmartEditor: 입력된 텍스트는 .__se-node / .se-text-paragraph 안에 들어감
           const se = root.querySelectorAll('.__se-node, .se-text-paragraph');
           if (se.length) {
@@ -880,13 +891,19 @@ export async function typeIntoEditorHuman(
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const rnd = (a: number, b: number) => a + Math.floor(Math.random() * (b - a));
 
+  // insertText: 포커스된 편집영역에 문자를 실제로 삽입하는 Electron API.
+  // SmartEditor처럼 자체 입력 처리를 하는 에디터에서 raw 키 이벤트보다 훨씬 확실하다.
   const sendChar = (ch: string) => {
-    if (ch === '\n') {
-      win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Return' });
-      win.webContents.sendInputEvent({ type: 'char', keyCode: '\r' });
-      win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Return' });
-    } else {
-      win.webContents.sendInputEvent({ type: 'char', keyCode: ch });
+    try {
+      if (ch === '\n') {
+        win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Return' });
+        win.webContents.sendInputEvent({ type: 'char', keyCode: '\r' });
+        win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Return' });
+      } else {
+        win.webContents.insertText(ch);
+      }
+    } catch {
+      // ignore
     }
   };
 
@@ -903,21 +920,31 @@ export async function typeIntoEditorHuman(
   await humanDelay(400, 800);
 
   if ((await editorTextLength(win)) <= before) {
-    // 키 입력을 안 받는 에디터 → 클립보드 붙여넣기로 확실하게 입력
+    // 폴백 1: 전체 문장을 한 번에 삽입
+    try {
+      win.webContents.insertText(text);
+      await humanDelay(700, 1200);
+    } catch {
+      // ignore
+    }
+    if ((await editorTextLength(win)) > before) {
+      return { ok: true, detail: '일괄 입력됨(insertText)' };
+    }
+    // 폴백 2: 클립보드 붙여넣기
     try {
       clipboard.writeText(text);
       win.webContents.paste();
       await humanDelay(900, 1600);
-      const after = await editorTextLength(win);
-      return after > before
-        ? { ok: true, detail: '붙여넣기로 입력됨' }
-        : {
-            ok: false,
-            detail: `입력 실패 (전 ${before}자 → 후 ${after}자, 커서 ${caret ? '있음' : '없음'})`,
-          };
     } catch {
-      return { ok: false, detail: '붙여넣기 실패' };
+      // ignore
     }
+    const after = await editorTextLength(win);
+    return after > before
+      ? { ok: true, detail: '붙여넣기로 입력됨' }
+      : {
+          ok: false,
+          detail: `입력 실패 (전 ${before}자 → 후 ${after}자, 커서 ${caret ? '있음' : '없음'})`,
+        };
   }
 
   // 키 입력이 먹으므로 나머지를 사람처럼 한 글자씩
