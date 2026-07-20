@@ -717,36 +717,55 @@ async function focusEditorPoint(
     .executeJavaScript(
       `
       (function () {
-        const big = (el) => { const r = el.getBoundingClientRect(); return r.width > 20 && r.height > 20; };
-        let target = null, offX = 0, offY = 0;
-        const tops = Array.from(document.querySelectorAll('[contenteditable="true"]')).filter(big);
-        if (tops.length) target = tops[0];
+        const big = (el) => { const r = el.getBoundingClientRect(); return r.width > 20 && r.height > 15; };
+        // 지식인 답변창은 SmartEditor ONE — contenteditable 속성이 없고 자체 커서를 그린다.
+        // 그래서 SE 전용 선택자까지 포함해서 찾는다.
+        const SEL = [
+          '[contenteditable="true"]',
+          '.se-text-paragraph',
+          '.se-module-text',
+          '.se-section-text',
+          '.se-components-wrap',
+          '.se-content',
+          'textarea',
+        ];
+        const findIn = (root) => {
+          for (const s of SEL) {
+            const els = Array.from(root.querySelectorAll(s)).filter(big);
+            if (els.length) return els[els.length - 1]; // 마지막(=본문 입력 영역)
+          }
+          return null;
+        };
+
+        let target = findIn(document), offX = 0, offY = 0, doc = document;
         if (!target) {
           for (const f of document.querySelectorAll('iframe')) {
             try {
               const d = f.contentDocument; if (!d) continue;
               const fr = f.getBoundingClientRect(); if (fr.width < 50 || fr.height < 50) continue;
-              const cands = Array.from(d.querySelectorAll('[contenteditable="true"]')).filter(big);
-              const body = (d.body && d.body.isContentEditable) ? d.body : null;
-              const el = cands[0] || body;
-              if (el) { target = el; offX = fr.left; offY = fr.top; try { f.contentWindow.focus(); } catch (e) {} break; }
+              const el = findIn(d) || ((d.body && d.body.isContentEditable) ? d.body : null);
+              if (el) { target = el; doc = d; offX = fr.left; offY = fr.top; try { f.contentWindow.focus(); } catch (e) {} break; }
             } catch (e) {}
           }
         }
         if (!target) return null;
-        const doc = target.ownerDocument;
+
         try { target.focus(); } catch (e) {}
+        // 네이티브 contenteditable이면 캐럿도 잡아둔다 (SE는 클릭으로 잡힘)
         try {
-          const range = doc.createRange();
-          range.selectNodeContents(target);
-          range.collapse(false);
-          const sel = doc.defaultView.getSelection();
-          sel.removeAllRanges(); sel.addRange(range);
+          if (target.isContentEditable) {
+            const range = doc.createRange();
+            range.selectNodeContents(target);
+            range.collapse(false);
+            const sel = doc.defaultView.getSelection();
+            sel.removeAllRanges(); sel.addRange(range);
+          }
         } catch (e) {}
+
         const b = target.getBoundingClientRect();
         return {
           x: Math.round(offX + b.left + Math.min(Math.max(b.width / 2, 30), 220)),
-          y: Math.round(offY + b.top + Math.min(Math.max(b.height / 3, 20), 60)),
+          y: Math.round(offY + b.top + Math.min(Math.max(b.height / 3, 15), 50)),
         };
       })();
     `,
@@ -755,24 +774,32 @@ async function focusEditorPoint(
   return r && typeof r.x === 'number' ? r : null;
 }
 
-/** 에디터 안 글자 수 (입력 성공 검증용) */
+/** 에디터 안 글자 수 (입력 성공 검증용) — SmartEditor(.__se-node) 포함 */
 async function editorTextLength(win: BrowserWindow): Promise<number> {
   return await win.webContents
     .executeJavaScript(
       `
       (function () {
-        const big = (el) => { const r = el.getBoundingClientRect(); return r.width > 20 && r.height > 20; };
-        let t = Array.from(document.querySelectorAll('[contenteditable="true"]')).filter(big)[0];
-        if (!t) {
-          for (const f of document.querySelectorAll('iframe')) {
-            try { const d = f.contentDocument; if (!d) continue;
-              const c = Array.from(d.querySelectorAll('[contenteditable="true"]')).filter(big)[0] || ((d.body && d.body.isContentEditable) ? d.body : null);
-              if (c) { t = c; break; }
-            } catch (e) {}
+        const readIn = (root) => {
+          // SmartEditor: 입력된 텍스트는 .__se-node / .se-text-paragraph 안에 들어감
+          const se = root.querySelectorAll('.__se-node, .se-text-paragraph');
+          if (se.length) {
+            let s = '';
+            se.forEach((n) => { s += (n.innerText || n.textContent || ''); });
+            return s.replace(/\\u200B/g, '').trim().length;
           }
+          const ce = root.querySelector('[contenteditable="true"]');
+          if (ce) return (ce.innerText || ce.textContent || '').trim().length;
+          const ta = root.querySelector('textarea');
+          if (ta) return (ta.value || '').trim().length;
+          return 0;
+        };
+        let n = readIn(document);
+        if (n > 0) return n;
+        for (const f of document.querySelectorAll('iframe')) {
+          try { const d = f.contentDocument; if (!d) continue; n = readIn(d); if (n > 0) return n; } catch (e) {}
         }
-        if (!t) { const ta = document.querySelector('textarea'); return ta ? (ta.value || '').trim().length : 0; }
-        return (t.innerText || t.textContent || '').trim().length;
+        return 0;
       })();
     `,
     )
@@ -800,17 +827,46 @@ export async function typeIntoEditorHuman(win: BrowserWindow, text: string): Pro
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const rnd = (a: number, b: number) => a + Math.floor(Math.random() * (b - a));
 
+  const sendChar = (ch: string) => {
+    if (ch === '\n') {
+      win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Return' });
+      win.webContents.sendInputEvent({ type: 'char', keyCode: '\r' });
+      win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Return' });
+    } else {
+      win.webContents.sendInputEvent({ type: 'char', keyCode: ch });
+    }
+  };
+
+  // 먼저 몇 글자만 보내서 실제로 들어가는지 확인 (허공에 300자 치는 것 방지)
+  const probe = text.slice(0, 3);
+  try {
+    for (const ch of probe) {
+      sendChar(ch);
+      await sleep(rnd(40, 90));
+    }
+  } catch {
+    // ignore
+  }
+  await humanDelay(400, 800);
+
+  if ((await editorTextLength(win)) === 0) {
+    // 키 입력을 안 받는 에디터 → 클립보드 붙여넣기로 확실하게 입력
+    try {
+      clipboard.writeText(text);
+      win.webContents.paste();
+      await humanDelay(700, 1300);
+      return (await editorTextLength(win)) > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  // 키 입력이 먹으므로 나머지를 사람처럼 한 글자씩
   let i = 0;
-  for (const ch of text) {
+  for (const ch of text.slice(probe.length)) {
     if (win.isDestroyed()) return false;
     try {
-      if (ch === '\n') {
-        win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Return' });
-        win.webContents.sendInputEvent({ type: 'char', keyCode: '\r' });
-        win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Return' });
-      } else {
-        win.webContents.sendInputEvent({ type: 'char', keyCode: ch });
-      }
+      sendChar(ch);
     } catch {
       return false;
     }
@@ -821,8 +877,7 @@ export async function typeIntoEditorHuman(win: BrowserWindow, text: string): Pro
   }
 
   await humanDelay(400, 900);
-  const len = await editorTextLength(win);
-  return len > 0;
+  return (await editorTextLength(win)) > 0;
 }
 
 /** 완전자동용 브라우저 창 (계정 세션·프록시·크롬 UA) */
