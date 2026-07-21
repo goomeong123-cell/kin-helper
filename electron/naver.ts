@@ -76,17 +76,21 @@ export interface CollectedQuestion {
 }
 
 // ===== questionList '답변 대기 질문' 위젯 인페이지 조작 (실측 검증됨) =====
-// 검색창 = .content_wrap._noanswer_wrap 안의 input._search_input (폼 없음 → URL 안 바뀜)
+// 반드시 #questionAll(답변 대기 질문) 위젯만 사용. #questionInterest(관심질문)는 절대 사용 금지.
+// 검색창 = #questionAll 안의 input._search_input (폼 없음 → URL 안 바뀜)
 // 검색버튼 = a._search_button, 최신순 = button._sort_option._param('recent')
+
+// #questionAll 위젯을 찾는 JS 조각 (없으면 관심 아닌 첫 위젯으로 폴백)
+const BOX_JS = `(document.querySelector('#questionAll .content_wrap._noanswer_wrap') || document.querySelector('#questionAll') || [...document.querySelectorAll('.content_wrap._noanswer_wrap')].find(w=>!/interest/i.test((w.closest('[id]')||{}).id||'')) || document.querySelector('.content_wrap._noanswer_wrap'))`;
 
 /** 위젯 검색창에 키워드 입력 후 검색 실행 (URL 변화 없이 목록만 갱신) */
 function searchInPageJS(keyword: string): string {
   return `
     (function () {
-      const box = document.querySelector('.content_wrap._noanswer_wrap');
-      if (!box) return false;
+      const box = ${BOX_JS};
+      if (!box) return 'no-box';
       const inp = box.querySelector('input._search_input, input.search_input');
-      if (!inp) return false;
+      if (!inp) return 'no-input';
       inp.focus();
       const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
       setter.call(inp, ${JSON.stringify(keyword)});
@@ -94,18 +98,18 @@ function searchInPageJS(keyword: string): string {
       inp.dispatchEvent(new Event('change', { bubbles: true }));
       const btn = box.querySelector('a._search_button, ._search_button');
       if (btn) btn.click();
-      ['keydown', 'keyup'].forEach((t) =>
-        inp.dispatchEvent(new KeyboardEvent(t, { key: 'Enter', keyCode: 13, which: 13, bubbles: true })),
+      ['keydown', 'keypress', 'keyup'].forEach((t) =>
+        inp.dispatchEvent(new KeyboardEvent(t, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true })),
       );
-      return true;
+      return btn ? 'searched' : 'no-btn';
     })();
   `;
 }
 
-/** 위젯의 '최신순' 정렬 버튼 클릭 */
+/** 위젯의 '최신순' 정렬 버튼 클릭 (#questionAll 내부만) */
 const SORT_RECENT_JS = `
   (function () {
-    const box = document.querySelector('.content_wrap._noanswer_wrap') || document;
+    const box = ${BOX_JS} || document;
     const btns = Array.from(box.querySelectorAll('button, a'));
     const b = btns.find((e) => (e.className || '').toString().includes("_param('recent')")) ||
               btns.find((e) => (e.textContent || '').replace(/\\s+/g, '') === '최신순');
@@ -114,10 +118,10 @@ const SORT_RECENT_JS = `
   })();
 `;
 
-/** '답변 대기 질문' 위젯에서 질문 목록 추출 (미답변만) */
+/** '답변 대기 질문' 위젯(#questionAll)에서 질문 목록 추출 (미답변만) */
 const SCRAPE_NOANSWER_JS = `
   (function () {
-    const box = document.querySelector('.content_wrap._noanswer_wrap') || document;
+    const box = ${BOX_JS} || document;
     const out = []; const seen = new Set();
     const keyOf = (h) => { const m = h.match(/dirId=(\\d+)[\\s\\S]*?docId=(\\d+)/) || h.match(/docId=(\\d+)/); return m ? m.slice(1).join('-') : h; };
     box.querySelectorAll('a[href*="detail.naver"]').forEach((a) => {
