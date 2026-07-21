@@ -75,6 +75,17 @@ export interface CollectedQuestion {
   category: string;
 }
 
+/** 지식인 질문 URL 정규화: http→https, 상대경로 보정, 호스트 고정 (ERR_FAILED 방지) */
+export function normalizeKinUrl(u: string): string {
+  let s = (u || '').trim();
+  if (!s) return s;
+  if (s.startsWith('//')) s = 'https:' + s;
+  else if (s.startsWith('/')) s = 'https://kin.naver.com' + s;
+  s = s.replace(/^http:\/\//i, 'https://');
+  if (!/^https:\/\//i.test(s)) s = 'https://' + s.replace(/^https?:\/\//i, '');
+  return s;
+}
+
 // ===== questionList '답변 대기 질문' 위젯 인페이지 조작 (실측 검증됨) =====
 // 반드시 #questionAll(답변 대기 질문) 위젯만 사용. #questionInterest(관심질문)는 절대 사용 금지.
 // 검색창 = #questionAll 안의 input._search_input (폼 없음 → URL 안 바뀜)
@@ -216,7 +227,7 @@ export async function fetchQuestionDetail(
   url: string,
 ): Promise<{ title?: string; body?: string; askedAt?: string }> {
   try {
-    const res = await fetch(url, {
+    const res = await fetch(normalizeKinUrl(url), {
       headers: {
         'User-Agent':
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36',
@@ -1090,7 +1101,7 @@ export async function autoOpenAndAnswer(
   submit: boolean,
 ): Promise<{ typed: boolean; submitted: boolean; error?: string }> {
   try {
-    await win.loadURL(url);
+    await win.loadURL(normalizeKinUrl(url));
     await humanDelay(1800, 3400); // 질문 읽는 시간
 
     // 이미 내가 답변한 질문이면 중단 (중복 방지 2차 안전장치)

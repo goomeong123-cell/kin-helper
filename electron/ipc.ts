@@ -10,6 +10,7 @@ import {
   openAutoWindow,
   autoScrapeList,
   autoOpenAndAnswer,
+  normalizeKinUrl,
   autoIsLoggedIn,
   autoGoToKinAnswerList,
   autoScrapeWaitingList,
@@ -210,7 +211,7 @@ export function registerIpc(ipcMain: IpcMain) {
           const r = ins.run([
             q.kinKey,
             q.title,
-            q.url,
+            normalizeKinUrl(q.url),
             q.content || null,
             q.category,
             k.brandId,
@@ -753,7 +754,7 @@ export function registerIpc(ipcMain: IpcMain) {
             `INSERT OR IGNORE INTO questions (kin_key, title, url, content, category, matched_brand_id, matched_keyword)
              VALUES (?, ?, ?, ?, ?, ?, ?)`,
           )
-          .run([fresh.kinKey, fresh.title, fresh.url, fresh.content || null, '', brandId ?? null, keyword || null]);
+          .run([fresh.kinKey, fresh.title, normalizeKinUrl(fresh.url), fresh.content || null, '', brandId ?? null, keyword || null]);
         qrow = db().prepare('SELECT * FROM questions WHERE kin_key=?').get([fresh.kinKey]) as any;
         targetUrl = fresh.url;
         targetTitle = fresh.title;
