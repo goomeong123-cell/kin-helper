@@ -97,14 +97,15 @@ export async function collectQuestions(opts: {
   });
 
   try {
-    // 키워드가 있으면 "답변 대기 질문 + 키워드" 검색 결과(questionList 검색창이 부르는 페이지),
+    // 키워드가 있으면 "해당 태그의 답변 대기 질문"(미답변만, 키워드 관련만 — 실측 검증됨),
     // 없으면 전체 답변 대기 목록.
+    // (search/noAnswerList 는 JS가 키워드를 무시하고 일반 목록으로 덮어써서 못 씀)
     const url = opts.keyword
-      ? `https://kin.naver.com/search/noAnswerList.naver?query=${encodeURIComponent(opts.keyword)}`
+      ? `https://kin.naver.com/tag/tagDetail.naver?tag=${encodeURIComponent(opts.keyword)}&listType=answer`
       : QUESTION_LIST_URL;
 
     await win.loadURL(url);
-    await humanDelay(1500, 2600); // JS로 목록 채워질 시간
+    await humanDelay(1200, 2200);
 
     // 사람처럼: 목록을 잠깐 스크롤 (JS 렌더 목록이 채워지도록)
     await win.webContents.executeJavaScript('window.scrollBy(0, 600);').catch(() => {});
@@ -682,26 +683,12 @@ export async function autoScrapeWaitingList(win: BrowserWindow): Promise<Collect
 /** 지식인 검색창에 키워드 검색 → 최신순 정렬 (홍보용) */
 export async function autoSearchKeyword(win: BrowserWindow, keyword: string): Promise<boolean> {
   try {
-    // '답변 대기 질문'만 키워드로 검색하는 페이지 (questionList 검색창이 연결되는 곳).
-    // 이미 답변 있는 질문은 안 나옴 → 홍보도 미답변 질문에만 답변하게 됨.
+    // 해당 태그의 '답변 대기 질문' 목록 (미답변만 + 키워드 관련만 — 실측 검증됨).
+    // search/noAnswerList 는 JS가 키워드를 무시하므로 쓰지 않음.
     await win.loadURL(
-      `https://kin.naver.com/search/noAnswerList.naver?query=${encodeURIComponent(keyword)}`,
+      `https://kin.naver.com/tag/tagDetail.naver?tag=${encodeURIComponent(keyword)}&listType=answer`,
     );
-    await humanDelay(1600, 2600); // JS로 목록이 채워질 시간
-    // 최신순 정렬 버튼이 있으면 클릭 (없으면 무시)
-    await win.webContents
-      .executeJavaScript(
-        `
-        (function () {
-          const els = Array.from(document.querySelectorAll('button, a'));
-          const b = els.find((e) => (e.textContent || '').replace(/\\s+/g,'').includes('최신순'));
-          if (b) { b.click(); return true; }
-          return false;
-        })();
-      `,
-      )
-      .catch(() => false);
-    await humanDelay(1200, 2200);
+    await humanDelay(1400, 2400);
     return true;
   } catch {
     return false;
