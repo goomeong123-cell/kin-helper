@@ -170,12 +170,23 @@ export function registerIpc(ipcMain: IpcMain) {
 
       const keywords: Array<{ keyword: string; brandId: number | null }> = [];
       if (opts.brandId) {
+        // 브랜드 선택 시엔 반드시 그 브랜드 키워드로만 검색.
+        // 키워드가 없으면 전체 목록으로 새지 않고 명확히 알림.
         const ks = db()
-          .prepare('SELECT * FROM keywords WHERE brand_id = ?')
+          .prepare("SELECT keyword FROM keywords WHERE brand_id = ? AND TRIM(keyword) != ''")
           .all([opts.brandId]) as any[];
+        if (ks.length === 0) {
+          return {
+            ok: false,
+            inserted: 0,
+            error: '이 브랜드에 등록된 검색 키워드가 없습니다. 브랜드·제품 탭에서 키워드를 먼저 추가하세요.',
+          };
+        }
         for (const k of ks) keywords.push({ keyword: k.keyword, brandId: opts.brandId });
+      } else {
+        // 브랜드 미선택(전체) → 키워드 없이 전체 답변대기 목록
+        keywords.push({ keyword: '', brandId: null });
       }
-      if (keywords.length === 0) keywords.push({ keyword: '', brandId: opts.brandId ?? null });
 
       let inserted = 0;
       for (const k of keywords) {
@@ -209,7 +220,8 @@ export function registerIpc(ipcMain: IpcMain) {
           if (r.changes > 0) inserted++;
         }
       }
-      return { ok: true, inserted };
+      const usedKeywords = keywords.map((k) => k.keyword).filter(Boolean);
+      return { ok: true, inserted, keywords: usedKeywords };
     },
   );
 

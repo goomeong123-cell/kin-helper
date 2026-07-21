@@ -120,7 +120,12 @@ export default function Questions() {
         brandId: activeBrand === 'all' ? undefined : activeBrand,
         accountId: accountId ?? undefined,
       });
-      toast(res.ok ? `질문 ${res.inserted}건 수집` : '수집 실패');
+      if (!res.ok) toast(res.error || '수집 실패');
+      else
+        toast(
+          `질문 ${res.inserted}건 수집` +
+            (res.keywords && res.keywords.length ? ` (검색: ${res.keywords.join(', ')})` : ' (전체 답변대기)'),
+        );
       await refresh();
     } finally {
       setCollecting(false);
