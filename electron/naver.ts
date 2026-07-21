@@ -83,6 +83,17 @@ export interface CollectedQuestion {
 // #questionAll 위젯을 찾는 JS 조각 (없으면 관심 아닌 첫 위젯으로 폴백)
 const BOX_JS = `(document.querySelector('#questionAll .content_wrap._noanswer_wrap') || document.querySelector('#questionAll') || [...document.querySelectorAll('.content_wrap._noanswer_wrap')].find(w=>!/interest/i.test((w.closest('[id]')||{}).id||'')) || document.querySelector('.content_wrap._noanswer_wrap'))`;
 
+// 로그인 시 기본 탭이 '관심질문'이라, 먼저 '답변을 기다리는 질문' 탭(#contentsOfMain)을 눌러 활성화해야 함.
+const ACTIVATE_TAB_JS = `
+  (function () {
+    const b = document.querySelector('#contentsOfMain')
+      || Array.from(document.querySelectorAll('button[role="tab"]')).find((x) => x.getAttribute('aria-controls') === 'questionQna')
+      || Array.from(document.querySelectorAll('button[role="tab"]')).find((x) => (x.textContent || '').replace(/\\s+/g, '').startsWith('답변을기다리는질문'));
+    if (b) { b.click(); return true; }
+    return false;
+  })();
+`;
+
 /** 위젯 검색창에 키워드 입력 후 검색 실행 (URL 변화 없이 목록만 갱신) */
 function searchInPageJS(keyword: string): string {
   return `
@@ -166,6 +177,10 @@ export async function collectQuestions(opts: {
     // 키워드가 있으면 위젯 내 검색창에 입력(URL 안 바뀜) → 최신순 정렬 → 목록 수집.
     await win.loadURL(QUESTION_LIST_URL);
     await humanDelay(2500, 3800); // 목록 렌더 대기
+
+    // 먼저 '답변을 기다리는 질문' 탭 활성화 (로그인 시 기본이 관심질문이라 필수)
+    await win.webContents.executeJavaScript(ACTIVATE_TAB_JS).catch(() => false);
+    await humanDelay(1500, 2500);
 
     if (opts.keyword) {
       await win.webContents.executeJavaScript(searchInPageJS(opts.keyword)).catch(() => false);
@@ -653,6 +668,9 @@ export async function autoGoToKinAnswerList(win: BrowserWindow): Promise<boolean
       await win.loadURL('https://kin.naver.com/qna/questionList.naver');
       await humanDelay(1400, 2400);
     }
+    // '답변을 기다리는 질문' 탭 활성화 (관심질문 아님)
+    await win.webContents.executeJavaScript(ACTIVATE_TAB_JS).catch(() => false);
+    await humanDelay(1400, 2400);
     return true;
   } catch {
     return false;
@@ -685,6 +703,9 @@ export async function autoSearchKeyword(win: BrowserWindow, keyword: string): Pr
     // questionList '답변 대기 질문' 위젯에서 인페이지 검색 → 최신순 (URL 안 바뀜, 미답변+키워드만).
     await win.loadURL(QUESTION_LIST_URL);
     await humanDelay(2500, 3800);
+    // 먼저 '답변을 기다리는 질문' 탭 활성화 (로그인 시 기본이 관심질문)
+    await win.webContents.executeJavaScript(ACTIVATE_TAB_JS).catch(() => false);
+    await humanDelay(1500, 2500);
     await win.webContents.executeJavaScript(searchInPageJS(keyword)).catch(() => false);
     await humanDelay(2800, 3800); // 검색 AJAX 대기
     await win.webContents.executeJavaScript(SORT_RECENT_JS).catch(() => false);
