@@ -1104,6 +1104,28 @@ export async function autoOpenAndAnswer(
     await win.loadURL(normalizeKinUrl(url));
     await humanDelay(1800, 3400); // 질문 읽는 시간
 
+    // FAQ 질문(권한 있는 계정만 답변 가능)이면 건너뜀.
+    // 제목 상단의 작은 'FAQ' 뱃지를 감지 (푸터 등 다른 곳의 FAQ 링크와 구분: 상단+작은 것만).
+    const isFaq = await win.webContents
+      .executeJavaScript(
+        `
+        (function () {
+          const els = document.querySelectorAll('span, em, i, strong, b, a, div');
+          for (const e of els) {
+            if (e.children.length > 0) continue;
+            if ((e.textContent || '').trim() !== 'FAQ') continue;
+            const r = e.getBoundingClientRect();
+            if (r.top >= 0 && r.top < 500 && r.width > 0 && r.width < 90 && r.height > 0 && r.height < 60) return true;
+          }
+          return false;
+        })();
+      `,
+      )
+      .catch(() => false);
+    if (isFaq) {
+      return { typed: false, submitted: false, error: 'FAQ 질문(권한 필요) — 건너뜀' };
+    }
+
     // 이미 내가 답변한 질문이면 중단 (중복 방지 2차 안전장치)
     const already = await win.webContents
       .executeJavaScript(

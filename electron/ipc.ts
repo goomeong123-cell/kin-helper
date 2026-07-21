@@ -781,6 +781,13 @@ export function registerIpc(ipcMain: IpcMain) {
       pushLog('사람처럼 답변 작성 중…');
       const res = await autoOpenAndAnswer(autoWin, targetUrl, gen.answer.body, submit);
       if (res.error) {
+        // FAQ 질문은 권한 없는 계정이 답변 불가 → 실패가 아니라 건너뜀. 재시도 방지 위해 skipped 처리.
+        if (/FAQ/.test(res.error)) {
+          pushLog('건너뜀: ' + res.error);
+          if (qrow && qrow.id) db().prepare("UPDATE questions SET status='skipped' WHERE id=?").run([qrow.id]);
+          await sleepRnd(1500, 3000);
+          continue;
+        }
         pushLog('작성 실패: ' + res.error);
         await sleepRnd(6000, 12000);
         continue;
