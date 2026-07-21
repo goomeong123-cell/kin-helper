@@ -472,6 +472,7 @@ function QuestionCard({
       <div className="q-meta">
         <span className="badge">지식인</span>
         {q.matched_keyword && <span className="badge blue">{q.matched_keyword}</span>}
+        {q.asked_at && <span className="badge">질문작성 {q.asked_at}</span>}
         {answer && <span className="badge green">답변 준비됨</span>}
         <a href={q.url} target="_blank" rel="noreferrer" className="muted">
           원문 보기 ↗

@@ -128,6 +128,7 @@ function migrate() {
       category TEXT,
       matched_brand_id INTEGER REFERENCES brands(id) ON DELETE SET NULL,
       matched_keyword TEXT,
+      asked_at TEXT,                  -- 질문자가 질문을 남긴 시각(원문 표기)
       status TEXT NOT NULL DEFAULT 'new' CHECK(status IN ('new','answered','skipped')),
       collected_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
@@ -158,4 +159,14 @@ function migrate() {
       value TEXT
     );
   `);
+
+  // 기존 DB에 없는 컬럼 보강 (이미 있으면 조용히 무시)
+  const addCol = (table: string, col: string, def: string) => {
+    try {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
+    } catch {
+      // 이미 존재 → 무시
+    }
+  };
+  addCol('questions', 'asked_at', 'TEXT');
 }

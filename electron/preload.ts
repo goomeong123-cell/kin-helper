@@ -49,7 +49,8 @@ const api = {
       ipcRenderer.invoke('answers:post', opts),
     markPosted: (answerId: number, accountId?: number) =>
       ipcRenderer.invoke('answers:markPosted', answerId, accountId),
-    history: () => ipcRenderer.invoke('answers:history'),
+    history: (opts?: { type?: 'promo' | 'daily'; brandId?: number; date?: string }) =>
+      ipcRenderer.invoke('answers:history', opts),
   },
   settings: {
     get: (key: string) => ipcRenderer.invoke('settings:get', key),

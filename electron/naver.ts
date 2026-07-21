@@ -180,7 +180,7 @@ function decodeEntities(s: string): string {
  */
 export async function fetchQuestionDetail(
   url: string,
-): Promise<{ title?: string; body?: string }> {
+): Promise<{ title?: string; body?: string; askedAt?: string }> {
   try {
     const res = await fetch(url, {
       headers: {
@@ -201,7 +201,15 @@ export async function fetchQuestionDetail(
       pick(/property="og:description"\s+content="([^"]*)"/i),
     ].filter(Boolean);
     const body = cands.sort((a, b) => b.length - a.length)[0] || '';
-    return { title: title || undefined, body: body || undefined };
+    // 질문 작성일: <span class="blind">작성일</span>2026.07.15
+    const askedAt =
+      pick(/작성일<\/span>\s*([0-9.]{8,}(?:\s*[0-9:]+)?)/i) ||
+      pick(/작성일[^0-9]{0,20}(20\d\d\.\s?\d\d?\.\s?\d\d?\.?[^<]*)/i);
+    return {
+      title: title || undefined,
+      body: body || undefined,
+      askedAt: askedAt || undefined,
+    };
   } catch {
     return {};
   }

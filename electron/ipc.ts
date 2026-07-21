@@ -181,10 +181,21 @@ export function registerIpc(ipcMain: IpcMain) {
       for (const k of keywords) {
         const found = await collectQuestions({ keyword: k.keyword || undefined, account });
         const ins = db().prepare(
-          `INSERT OR IGNORE INTO questions (kin_key, title, url, content, category, matched_brand_id, matched_keyword)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT OR IGNORE INTO questions (kin_key, title, url, content, category, matched_brand_id, matched_keyword, asked_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         );
         for (const q of found) {
+          // 새로 들어올 질문만 상세 페이지에서 작성 시각을 가져옴 (중복은 건너뜀)
+          const exists = db().prepare('SELECT id FROM questions WHERE kin_key = ?').get([q.kinKey]);
+          let askedAt: string | null = null;
+          if (!exists) {
+            try {
+              const d = await fetchQuestionDetail(q.url);
+              askedAt = d.askedAt || null;
+            } catch {
+              // ignore
+            }
+          }
           const r = ins.run([
             q.kinKey,
             q.title,
@@ -193,6 +204,7 @@ export function registerIpc(ipcMain: IpcMain) {
             q.category,
             k.brandId,
             k.keyword || null,
+            askedAt,
           ]);
           if (r.changes > 0) inserted++;
         }
@@ -367,17 +379,36 @@ export function registerIpc(ipcMain: IpcMain) {
     return db().prepare('SELECT * FROM answers WHERE id = ?').get([id]);
   });
 
-  ipcMain.handle('answers:history', () =>
-    db()
-      .prepare(
-        `SELECT a.*, q.title AS question_title, q.url AS question_url, b.name AS brand_name, acc.naver_id AS account_naver_id
-         FROM answers a
-         LEFT JOIN questions q ON q.id = a.question_id
-         LEFT JOIN brands b ON b.id = a.brand_id
-         LEFT JOIN accounts acc ON acc.id = a.account_id
-         ORDER BY a.created_at DESC LIMIT 200`,
-      )
-      .all(),
+  ipcMain.handle(
+    'answers:history',
+    (_e, opts?: { type?: 'promo' | 'daily'; brandId?: number; date?: string }) => {
+      const cond: string[] = [];
+      const params: any[] = [];
+      if (opts?.type === 'promo') cond.push('a.promo_included = 1');
+      else if (opts?.type === 'daily') cond.push('a.promo_included = 0');
+      if (opts?.brandId) {
+        cond.push('a.brand_id = ?');
+        params.push(opts.brandId);
+      }
+      if (opts?.date) {
+        // 등록일 우선, 없으면 생성일 기준으로 해당 날짜 필터 (YYYY-MM-DD)
+        cond.push("date(COALESCE(a.posted_at, a.created_at), 'localtime') = ?");
+        params.push(opts.date);
+      }
+      const where = cond.length ? 'WHERE ' + cond.join(' AND ') : '';
+      return db()
+        .prepare(
+          `SELECT a.*, q.title AS question_title, q.url AS question_url, q.asked_at AS question_asked_at,
+                  b.name AS brand_name, acc.naver_id AS account_naver_id
+           FROM answers a
+           LEFT JOIN questions q ON q.id = a.question_id
+           LEFT JOIN brands b ON b.id = a.brand_id
+           LEFT JOIN accounts acc ON acc.id = a.account_id
+           ${where}
+           ORDER BY a.created_at DESC LIMIT 300`,
+        )
+        .all(params);
+    },
   );
 
   /* ---------- 답변 등록 ---------- */

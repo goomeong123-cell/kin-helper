@@ -38,6 +38,7 @@ export interface Question {
   matched_brand_id: number | null;
   matched_keyword: string | null;
   status: 'new' | 'answered' | 'skipped';
+  asked_at: string | null;
   collected_at: string;
 }
 
@@ -95,7 +96,7 @@ export interface Api {
     updateBody: (id: number, body: string) => Promise<Answer>;
     post: (opts: { answerId: number; accountId: number; mode: PostMode }) => Promise<{ ok: boolean; error?: string; needsHuman?: boolean }>;
     markPosted: (answerId: number, accountId?: number) => Promise<{ ok: boolean }>;
-    history: () => Promise<Array<Answer & { question_title: string; question_url: string; brand_name: string | null; account_naver_id: string | null }>>;
+    history: (opts?: { type?: 'promo' | 'daily'; brandId?: number; date?: string }) => Promise<Array<Answer & { question_title: string; question_url: string; question_asked_at: string | null; brand_name: string | null; account_naver_id: string | null }>>;
   };
   settings: {
     get: (key: string) => Promise<string | null>;
