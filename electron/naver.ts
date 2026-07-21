@@ -75,6 +75,67 @@ export interface CollectedQuestion {
   category: string;
 }
 
+// ===== questionList '답변 대기 질문' 위젯 인페이지 조작 (실측 검증됨) =====
+// 검색창 = .content_wrap._noanswer_wrap 안의 input._search_input (폼 없음 → URL 안 바뀜)
+// 검색버튼 = a._search_button, 최신순 = button._sort_option._param('recent')
+
+/** 위젯 검색창에 키워드 입력 후 검색 실행 (URL 변화 없이 목록만 갱신) */
+function searchInPageJS(keyword: string): string {
+  return `
+    (function () {
+      const box = document.querySelector('.content_wrap._noanswer_wrap');
+      if (!box) return false;
+      const inp = box.querySelector('input._search_input, input.search_input');
+      if (!inp) return false;
+      inp.focus();
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      setter.call(inp, ${JSON.stringify(keyword)});
+      inp.dispatchEvent(new Event('input', { bubbles: true }));
+      inp.dispatchEvent(new Event('change', { bubbles: true }));
+      const btn = box.querySelector('a._search_button, ._search_button');
+      if (btn) btn.click();
+      ['keydown', 'keyup'].forEach((t) =>
+        inp.dispatchEvent(new KeyboardEvent(t, { key: 'Enter', keyCode: 13, which: 13, bubbles: true })),
+      );
+      return true;
+    })();
+  `;
+}
+
+/** 위젯의 '최신순' 정렬 버튼 클릭 */
+const SORT_RECENT_JS = `
+  (function () {
+    const box = document.querySelector('.content_wrap._noanswer_wrap') || document;
+    const btns = Array.from(box.querySelectorAll('button, a'));
+    const b = btns.find((e) => (e.className || '').toString().includes("_param('recent')")) ||
+              btns.find((e) => (e.textContent || '').replace(/\\s+/g, '') === '최신순');
+    if (b) { b.click(); return true; }
+    return false;
+  })();
+`;
+
+/** '답변 대기 질문' 위젯에서 질문 목록 추출 (미답변만) */
+const SCRAPE_NOANSWER_JS = `
+  (function () {
+    const box = document.querySelector('.content_wrap._noanswer_wrap') || document;
+    const out = []; const seen = new Set();
+    const keyOf = (h) => { const m = h.match(/dirId=(\\d+)[\\s\\S]*?docId=(\\d+)/) || h.match(/docId=(\\d+)/); return m ? m.slice(1).join('-') : h; };
+    box.querySelectorAll('a[href*="detail.naver"]').forEach((a) => {
+      const href = a.href || ''; if (!/docId=/.test(href)) return;
+      const key = keyOf(href); if (seen.has(key)) return;
+      // 앵커 텍스트는 "제목 새 창 본문스니펫" 형태 → '새 창' 기준으로 제목/본문 분리
+      const raw = (a.textContent || '').replace(/\\s+/g, ' ').trim();
+      const parts = raw.split('새 창');
+      const title = (parts[0] || '').trim();
+      const content = parts.slice(1).join(' ').trim();
+      if (title.length < 4) return;
+      seen.add(key);
+      out.push({ kinKey: key, title: title, url: href, content: content, category: '' });
+    });
+    return out.slice(0, 40);
+  })();
+`;
+
 /**
  * 답변 대기 질문 목록 수집.
  * keyword가 있으면 지식인 검색 결과(답변 대기)에서, 없으면 전체 대기 목록에서 수집.
@@ -97,54 +158,21 @@ export async function collectQuestions(opts: {
   });
 
   try {
-    // 키워드가 있으면 "해당 태그의 답변 대기 질문"(미답변만, 키워드 관련만 — 실측 검증됨),
-    // 없으면 전체 답변 대기 목록.
-    // (search/noAnswerList 는 JS가 키워드를 무시하고 일반 목록으로 덮어써서 못 씀)
-    const url = opts.keyword
-      ? `https://kin.naver.com/tag/tagDetail.naver?tag=${encodeURIComponent(opts.keyword)}&listType=answer`
-      : QUESTION_LIST_URL;
+    // 항상 questionList 페이지의 '답변 대기 질문' 위젯을 사용.
+    // 키워드가 있으면 위젯 내 검색창에 입력(URL 안 바뀜) → 최신순 정렬 → 목록 수집.
+    await win.loadURL(QUESTION_LIST_URL);
+    await humanDelay(2500, 3800); // 목록 렌더 대기
 
-    await win.loadURL(url);
-    await humanDelay(1200, 2200);
+    if (opts.keyword) {
+      await win.webContents.executeJavaScript(searchInPageJS(opts.keyword)).catch(() => false);
+      await humanDelay(2800, 3800); // 검색 결과 AJAX 대기
+      await win.webContents.executeJavaScript(SORT_RECENT_JS).catch(() => false);
+      await humanDelay(2200, 3200); // 최신순 재정렬 대기
+    }
+    await win.webContents.executeJavaScript('window.scrollBy(0, 500);').catch(() => {});
+    await humanDelay(600, 1200);
 
-    // 사람처럼: 목록을 잠깐 스크롤 (JS 렌더 목록이 채워지도록)
-    await win.webContents.executeJavaScript('window.scrollBy(0, 600);').catch(() => {});
-    await humanDelay(700, 1400);
-
-    // detail 링크는 /qna/detail.naver?...docId= 형태. 답변 있는 질문(answerNo)은 제외.
-    const script = `
-      (function () {
-        const out = [];
-        const seen = new Set();
-        const keyOf = (href) => {
-          const m = href.match(/dirId=(\\d+)[\\s\\S]*?docId=(\\d+)/) || href.match(/docId=(\\d+)/);
-          return m ? m.slice(1).join('-') : href;
-        };
-        const add = (titleA, contA) => {
-          const href = titleA.href || '';
-          if (!/detail\\.naver/.test(href) || !/docId=/.test(href)) return;
-          if (/answerNo=/.test(href)) return; // 이미 답변 있는 질문 제외 (미답변만)
-          const key = keyOf(href);
-          if (seen.has(key)) return;
-          const title = (titleA.textContent || '').replace(/\\s+/g, ' ').trim();
-          if (!title || title.length < 4) return;
-          const content = contA ? (contA.textContent || '').replace(/\\s+/g, ' ').trim() : '';
-          seen.add(key);
-          out.push({ kinKey: key, title: title, url: href, content: content, category: '' });
-        };
-        // 1순위: 목록 항목(li.lst)
-        document.querySelectorAll('li.lst').forEach((li) => {
-          const a = li.querySelector('div.tit a, a.txt') || li.querySelector('a[href*="detail.naver"]');
-          if (a) add(a, li.querySelector('a.cont'));
-        });
-        // 2순위(폴백): 페이지 전체 detail 앵커
-        if (out.length === 0) {
-          document.querySelectorAll('a[href*="detail.naver"]').forEach((a) => add(a, null));
-        }
-        return out.slice(0, 40);
-      })();
-    `;
-    const result = (await win.webContents.executeJavaScript(script)) as CollectedQuestion[];
+    const result = (await win.webContents.executeJavaScript(SCRAPE_NOANSWER_JS)) as CollectedQuestion[];
     return Array.isArray(result) ? result : [];
   } finally {
     win.destroy();
@@ -642,53 +670,23 @@ export async function autoScrapeWaitingList(win: BrowserWindow): Promise<Collect
     .catch(() => {});
   await humanDelay(600, 1300);
 
-  const script = `
-    (function () {
-      const out = []; const seen = new Set();
-      const keyOf = (h) => { const m = h.match(/dirId=(\\d+)[\\s\\S]*?docId=(\\d+)/) || h.match(/docId=(\\d+)/); return m ? m.slice(1).join('-') : h; };
-      const add = (a, contEl) => {
-        const href = a.href || ''; if (!/detail\\.naver/.test(href) || !/docId=/.test(href)) return;
-        if (/answerNo=/.test(href)) return; // 이미 답변 있는 질문은 제외 (미답변만)
-        const key = keyOf(href); if (seen.has(key)) return;
-        const title = (a.textContent || '').replace(/\\s+/g, ' ').trim(); if (title.length < 4) return;
-        seen.add(key);
-        out.push({ kinKey: key, title, url: href, content: contEl ? (contEl.textContent || '').replace(/\\s+/g,' ').trim() : '', category: '' });
-      };
-      // 1) '답변을 기다리는 질문' 영역 우선
-      const box = document.querySelector('._noanswer_list, .answer_list');
-      if (box) {
-        box.querySelectorAll('li').forEach((li) => {
-          const a = li.querySelector('a[href*="detail.naver"]');
-          if (a) add(a, li.querySelector('a.cont, .cont'));
-        });
-      }
-      // 2) 폴백: li.lst 구조
-      if (out.length === 0) {
-        document.querySelectorAll('li.lst').forEach((li) => {
-          const a = li.querySelector('div.tit a, a.txt') || li.querySelector('a[href*="detail.naver"]');
-          if (a) add(a, li.querySelector('a.cont'));
-        });
-      }
-      // 3) 폴백: 페이지 전체 detail 링크
-      if (out.length === 0) {
-        document.querySelectorAll('a[href*="detail.naver"]').forEach((a) => add(a, null));
-      }
-      return out.slice(0, 40);
-    })();
-  `;
-  const r = await win.webContents.executeJavaScript(script).catch(() => []);
+  // '답변 대기 질문' 위젯에서 추출 (검증된 공통 스크래퍼)
+  const r = await win.webContents.executeJavaScript(SCRAPE_NOANSWER_JS).catch(() => []);
   return Array.isArray(r) ? r : [];
 }
 
 /** 지식인 검색창에 키워드 검색 → 최신순 정렬 (홍보용) */
 export async function autoSearchKeyword(win: BrowserWindow, keyword: string): Promise<boolean> {
   try {
-    // 해당 태그의 '답변 대기 질문' 목록 (미답변만 + 키워드 관련만 — 실측 검증됨).
-    // search/noAnswerList 는 JS가 키워드를 무시하므로 쓰지 않음.
-    await win.loadURL(
-      `https://kin.naver.com/tag/tagDetail.naver?tag=${encodeURIComponent(keyword)}&listType=answer`,
-    );
-    await humanDelay(1400, 2400);
+    // questionList '답변 대기 질문' 위젯에서 인페이지 검색 → 최신순 (URL 안 바뀜, 미답변+키워드만).
+    await win.loadURL(QUESTION_LIST_URL);
+    await humanDelay(2500, 3800);
+    await win.webContents.executeJavaScript(searchInPageJS(keyword)).catch(() => false);
+    await humanDelay(2800, 3800); // 검색 AJAX 대기
+    await win.webContents.executeJavaScript(SORT_RECENT_JS).catch(() => false);
+    await humanDelay(2200, 3200); // 최신순 재정렬 대기
+    await win.webContents.executeJavaScript('window.scrollBy(0, 400);').catch(() => {});
+    await humanDelay(500, 1000);
     return true;
   } catch {
     return false;
