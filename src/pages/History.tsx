@@ -17,6 +17,15 @@ const STATUS: Record<Answer['status'], { label: string; cls: string }> = {
 
 type TypeFilter = 'all' | 'promo' | 'daily';
 
+// SQLite datetime('now')(created_at)는 UTC인데 'Z'가 없어 브라우저가 로컬로 오해 → 9시간 어긋남.
+// 타임존 표기가 없으면 UTC로 간주해서 한국시간으로 정확히 변환.
+function fmtTime(s?: string | null): string {
+  if (!s) return '';
+  let v = s.trim();
+  if (!/[zZ]$|[+-]\d\d:?\d\d$/.test(v)) v = v.replace(' ', 'T') + 'Z';
+  return new Date(v).toLocaleString('ko-KR');
+}
+
 export default function History() {
   const [rows, setRows] = useState<Row[]>([]);
   const [brands, setBrands] = useState<Brand[]>([]);
@@ -125,7 +134,7 @@ export default function History() {
                   )}
                   <span className="muted" style={{ fontSize: 12.5 }}>
                     {r.account_naver_id || '계정 미지정'} ·{' '}
-                    {new Date(r.posted_at || r.created_at).toLocaleString('ko-KR')}
+                    {fmtTime(r.posted_at || r.created_at)}
                     {r.question_asked_at ? ` · 질문작성 ${r.question_asked_at}` : ''}
                   </span>
                 </div>
