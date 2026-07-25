@@ -738,10 +738,11 @@ export function registerIpc(ipcMain: IpcMain) {
         pushLog(`질문 ${list.length}개 발견`);
         if (autoStop || !autoWin || autoWin.isDestroyed()) break;
 
-        // 아직 우리가 답변 안 한 질문 고르기
+        // 아직 시도한 적 없는 질문만 고르기.
+        // 한 번이라도 시도한 질문(answered/skipped/failed)은 어느 계정이든 다시 시도 안 함.
         const fresh = list.find((q) => {
           const row = db().prepare('SELECT status FROM questions WHERE kin_key=?').get([q.kinKey]) as any;
-          return !row || row.status !== 'answered';
+          return !row || row.status === 'new';
         });
         if (!fresh) {
           pushLog('새 질문 없음 — 잠시 대기');
@@ -781,15 +782,24 @@ export function registerIpc(ipcMain: IpcMain) {
       pushLog('사람처럼 답변 작성 중…');
       const res = await autoOpenAndAnswer(autoWin, targetUrl, gen.answer.body, submit);
       if (res.error) {
-        // FAQ 질문은 권한 없는 계정이 답변 불가 → 실패가 아니라 건너뜀. 재시도 방지 위해 skipped 처리.
-        if (/FAQ/.test(res.error)) {
-          pushLog('건너뜀: ' + res.error);
-          if (qrow && qrow.id) db().prepare("UPDATE questions SET status='skipped' WHERE id=?").run([qrow.id]);
+        const isFaqErr = /FAQ/.test(res.error);
+        // 답변은 실패로 기록(이력에 빨간 '실패'/'FAQ 실패'로 표시, error 저장).
+        if (gen?.answer?.id)
+          db()
+            .prepare("UPDATE answers SET account_id=?, status='failed', mode='auto', error=? WHERE id=?")
+            .run([accountId, res.error, gen.answer.id]);
+        // 질문은 '시도함'으로 표시 → 다른 계정/다음 실행에서 다시 시도하지 않고 PASS.
+        if (qrow && qrow.id)
+          db()
+            .prepare('UPDATE questions SET status=? WHERE id=?')
+            .run([isFaqErr ? 'skipped' : 'failed', qrow.id]);
+        if (isFaqErr) {
+          pushLog('건너뜀(FAQ 권한 필요): ' + res.error);
           await sleepRnd(1500, 3000);
-          continue;
+        } else {
+          pushLog('작성 실패: ' + res.error);
+          await sleepRnd(6000, 12000);
         }
-        pushLog('작성 실패: ' + res.error);
-        await sleepRnd(6000, 12000);
         continue;
       }
 

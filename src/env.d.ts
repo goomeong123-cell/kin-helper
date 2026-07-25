@@ -37,7 +37,7 @@ export interface Question {
   category: string | null;
   matched_brand_id: number | null;
   matched_keyword: string | null;
-  status: 'new' | 'answered' | 'skipped';
+  status: 'new' | 'answered' | 'skipped' | 'failed';
   asked_at: string | null;
   collected_at: string;
 }

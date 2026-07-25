@@ -126,7 +126,11 @@ export default function History() {
             <div className="row" key={r.id}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 5, minWidth: 0 }}>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                  <span className={`badge ${STATUS[r.status].cls}`}>{STATUS[r.status].label}</span>
+                  <span className={`badge ${STATUS[r.status].cls}`}>
+                    {r.status === 'failed' && r.error && /FAQ/.test(r.error)
+                      ? 'FAQ 실패'
+                      : STATUS[r.status].label}
+                  </span>
                   {r.promo_included ? (
                     <span className="badge amber">홍보{r.brand_name ? ` · ${r.brand_name}` : ''}</span>
                   ) : (
