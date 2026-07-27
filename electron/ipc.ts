@@ -591,18 +591,38 @@ export function registerIpc(ipcMain: IpcMain) {
     return true;
   });
 
-  ipcMain.handle('auto:start', async (_e, opts: { accountId: number; submit: boolean; brandId?: number; useCollected?: boolean }) => {
+  ipcMain.handle(
+    'auto:start',
+    async (
+      _e,
+      opts: { accountId?: number; accountIds?: number[]; submit: boolean; brandId?: number; useCollected?: boolean },
+    ) => {
     if (autoRunning) return { ok: false, error: '이미 실행 중입니다.' };
-    const acc = db().prepare('SELECT * FROM accounts WHERE id = ?').get([opts.accountId]) as any;
-    if (!acc) return { ok: false, error: '계정을 찾을 수 없습니다.' };
-    if (!acc.proxy_host || !acc.proxy_port) {
+    // 여러 계정(교대) 또는 단일 계정 모두 지원
+    const rawIds =
+      opts.accountIds && opts.accountIds.length
+        ? opts.accountIds
+        : opts.accountId != null
+          ? [opts.accountId]
+          : [];
+    const ids = Array.from(new Set(rawIds));
+    if (!ids.length) return { ok: false, error: '계정을 선택하세요.' };
+    const accs = ids
+      .map((id) => db().prepare('SELECT * FROM accounts WHERE id = ?').get([id]) as any)
+      .filter(Boolean);
+    if (!accs.length) return { ok: false, error: '계정을 찾을 수 없습니다.' };
+    const proxied = accs.filter((a) => a.proxy_host && a.proxy_port);
+    if (!proxied.length) {
       return { ok: false, error: '프록시 없는 계정은 완전자동을 실행할 수 없습니다.' };
     }
+    const skipped = accs.length - proxied.length;
+    const useIds = proxied.map((a) => a.id as number);
     autoRunning = true;
     autoStop = false;
     autoCount = 0;
-    pushLog('시작 중…');
-    runAutopilot(opts.accountId, opts.submit, opts.brandId, opts.useCollected)
+    pushLog(useIds.length > 1 ? `시작 중… (${useIds.length}개 계정 교대)` : '시작 중…');
+    if (skipped) pushLog(`⚠ 프록시 없는 계정 ${skipped}개는 제외했습니다`);
+    runAutopilot(useIds, opts.submit, opts.brandId, opts.useCollected)
       .catch((e) => {
         pushLog('오류: ' + (e instanceof Error ? e.message : String(e)));
       })
@@ -621,40 +641,84 @@ export function registerIpc(ipcMain: IpcMain) {
     return { ok: true };
   });
 
-  async function runAutopilot(accountId: number, submit: boolean, onlyBrandId?: number, useCollected?: boolean) {
-    const acc = db().prepare('SELECT * FROM accounts WHERE id = ?').get([accountId]) as any;
-    const proxy = accountToProxy(acc);
+  async function runAutopilot(accountIds: number[], submit: boolean, onlyBrandId?: number, useCollected?: boolean) {
     const ratio = Number(getS('promo_ratio') || '20');
-    const dailyLimit = acc.daily_limit || 5;
+    const rotate = accountIds.length > 1;
+    let rotPtr = 0;
+    // 현재 교대 중인 계정 (switchAccount가 갱신)
+    let accountId = -1;
+    let acc: any = null;
+    let dailyLimit = 5;
 
-    autoWin = await openAutoWindow(proxy);
-    autoWin.on('closed', () => {
-      autoStop = true;
-      autoWin = null;
-    });
+    // 오늘 이 계정이 아직 한도가 남았는지
+    const underLimit = (id: number) => {
+      const a = db().prepare('SELECT daily_limit FROM accounts WHERE id=?').get([id]) as any;
+      const lim = a?.daily_limit || 5;
+      const t = db()
+        .prepare(
+          "SELECT COUNT(*) n FROM answers WHERE account_id=? AND status='posted' AND date(posted_at)=date('now','localtime')",
+        )
+        .get([id]) as any;
+      return (t?.n || 0) < lim;
+    };
 
-    // 1~2단계: 네이버 접속 후 로그인 상태 확인 (비밀번호 자동입력은 하지 않음)
-    pushLog('네이버 접속 · 로그인 상태 확인 중…');
-    const login = await autoIsLoggedIn(autoWin);
-    if (autoStop) return;
-    if (!login.ok) {
-      // 오판 가능성이 있으므로 중단하지 않고 일단 진행 — 실제로 안 되면 '답변' 버튼 단계에서 잡힘
-      pushLog(`⚠ 로그인 확인 실패 (${login.detail}) — 일단 진행해 봅니다`);
-    } else {
-      pushLog(`로그인 확인됨 ✓ (${login.detail})`);
+    // 다음 사용 가능한 계정으로 교대. 계정이 바뀌면 그 계정의 프록시·세션으로 창을 새로 연다.
+    // (사람이 계정 바꿔 로그인하는 흐름과 동일 — 한 번에 창 하나)
+    async function switchAccount(): Promise<boolean> {
+      let pick = -1;
+      for (let i = 0; i < accountIds.length; i++) {
+        const cand = accountIds[(rotPtr + i) % accountIds.length];
+        if (underLimit(cand)) {
+          pick = cand;
+          rotPtr = (rotPtr + i + 1) % accountIds.length;
+          break;
+        }
+      }
+      if (pick < 0) return false;
+      // 같은 계정이고 창이 살아있으면 그대로 사용 (단일 계정은 창을 다시 열지 않음)
+      if (pick === accountId && autoWin && !autoWin.isDestroyed()) return true;
+      accountId = pick;
+      acc = db().prepare('SELECT * FROM accounts WHERE id = ?').get([accountId]) as any;
+      dailyLimit = acc.daily_limit || 5;
+      // 이전 창은 의도적으로 닫음 — closed 리스너를 떼서 autoStop이 켜지지 않게 함
+      if (autoWin && !autoWin.isDestroyed()) {
+        try {
+          autoWin.removeAllListeners('closed');
+          autoWin.close();
+        } catch {
+          // ignore
+        }
+      }
+      autoWin = await openAutoWindow(accountToProxy(acc));
+      autoWin.on('closed', () => {
+        autoStop = true;
+        autoWin = null;
+      });
+      // 1~2단계: 네이버 접속 후 로그인 상태 확인 (비밀번호 자동입력은 하지 않음)
+      pushLog(`[${acc.naver_id}] 네이버 접속 · 로그인 확인 중…`);
+      const login = await autoIsLoggedIn(autoWin);
+      if (login.ok) pushLog(`[${acc.naver_id}] 로그인 확인됨 ✓`);
+      else pushLog(`⚠ [${acc.naver_id}] 로그인 확인 실패 (${login.detail}) — 일단 진행`);
+      return true;
     }
+
+    if (!(await switchAccount())) {
+      pushLog('실행 가능한 계정이 없습니다 (모두 하루 한도 도달?)');
+      return;
+    }
+    if (autoStop) return;
 
     while (!autoStop) {
       if (!autoWin || autoWin.isDestroyed()) break;
 
-      const today = db()
-        .prepare(
-          "SELECT COUNT(*) n FROM answers WHERE account_id=? AND status='posted' AND date(posted_at)=date('now','localtime')",
-        )
-        .get([accountId]) as any;
-      if ((today?.n || 0) >= dailyLimit) {
-        pushLog(`하루 한도(${dailyLimit}) 도달 — 종료`);
-        break;
+      // 현재 계정이 한도에 도달했으면 다음 계정으로 교대 (없으면 종료)
+      if (!underLimit(accountId)) {
+        pushLog(`[${acc.naver_id}] 하루 한도(${dailyLimit}) 도달`);
+        if (!(await switchAccount())) {
+          pushLog('모든 계정 하루 한도 도달 — 종료');
+          break;
+        }
+        continue;
       }
 
       // ===== 수집 발행: DB에 수집해둔 질문을 순서대로 발행 =====
@@ -815,6 +879,13 @@ export function registerIpc(ipcMain: IpcMain) {
         const waitMs = (minS + Math.random() * (maxS - minS)) * 1000;
         pushLog(`등록 완료 (${autoCount}) — 다음까지 약 ${Math.round(waitMs / 1000)}초 대기`);
         await waitWithCountdown(waitMs);
+        // 여러 계정이면 다음 계정으로 교대
+        if (rotate && !autoStop) {
+          if (!(await switchAccount())) {
+            pushLog('모든 계정 하루 한도 도달 — 종료');
+            break;
+          }
+        }
       } else {
         // 관전 모드: 등록 직전 멈춤. 사람이 확인 후 [다음]
         db()
@@ -827,6 +898,13 @@ export function registerIpc(ipcMain: IpcMain) {
         if (autoStop) break;
         autoCount++;
         await sleepRnd(4000, 10000);
+        // 여러 계정이면 다음 계정으로 교대
+        if (rotate && !autoStop) {
+          if (!(await switchAccount())) {
+            pushLog('모든 계정 하루 한도 도달 — 종료');
+            break;
+          }
+        }
       }
     }
     autoStatus = autoStop ? '중지됨' : autoStatus;

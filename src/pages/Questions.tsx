@@ -30,6 +30,8 @@ export default function Questions() {
   });
   const [autoSubmit, setAutoSubmit] = useState(false);
   const [autoTab, setAutoTab] = useState<'full' | 'collect'>('full');
+  // 완전자동에 참여시킬 계정들 (여러 개면 번갈아 등록 = 로테이션)
+  const [autoAccountIds, setAutoAccountIds] = useState<number[]>([]);
 
   async function loadDrafts() {
     const drafts = await window.api.answers.drafts();
@@ -44,6 +46,11 @@ export default function Questions() {
     const acc = await window.api.accounts.list();
     setAccounts(acc);
     if (acc.length && accountId === null) setAccountId(acc[0].id);
+    // 완전자동 계정 기본값: 프록시 있는 첫 계정 하나 (사용자가 체크로 더 추가)
+    if (acc.length && autoAccountIds.length === 0) {
+      const firstProxied = acc.find((a) => a.proxy_host && a.proxy_port);
+      if (firstProxied) setAutoAccountIds([firstProxied.id]);
+    }
     const r = await window.api.settings.get('promo_ratio');
     setPromoRatio(r ? Number(r) : 20);
     const qs = await window.api.questions.list({
@@ -89,13 +96,18 @@ export default function Questions() {
     return () => window.clearInterval(t);
   }, []);
 
+  function toggleAutoAccount(id: number) {
+    setAutoAccountIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
+
   async function startAuto() {
-    if (!accountId) {
-      toast('등록 계정을 먼저 선택하세요.');
+    const ids = autoAccountIds.length ? autoAccountIds : accountId ? [accountId] : [];
+    if (!ids.length) {
+      toast('완전자동에 사용할 계정을 선택하세요.');
       return;
     }
     const res = await window.api.auto.start({
-      accountId,
+      accountIds: ids,
       submit: autoSubmit,
       // 브랜드 탭을 고르면 홍보는 그 브랜드만 사용 ('전체'면 홍보 브랜드 중 랜덤)
       brandId: activeBrand === 'all' ? undefined : activeBrand,
@@ -104,7 +116,7 @@ export default function Questions() {
     });
     if (!res.ok) toast(res.error || '시작 실패');
     else {
-      toast('완전자동 시작 — 브라우저가 열립니다');
+      toast(ids.length > 1 ? `완전자동 시작 — ${ids.length}개 계정 교대` : '완전자동 시작 — 브라우저가 열립니다');
       setAuto((a) => ({ ...a, running: true }));
     }
   }
@@ -315,6 +327,54 @@ export default function Questions() {
             )}
           </div>
         </div>
+        {/* 교대 계정 선택 — 여러 개 체크하면 번갈아 가며(로테이션) 등록 */}
+        {accounts.length > 0 && (
+          <div style={{ marginTop: 12 }}>
+            <div className="label" style={{ margin: '0 0 6px' }}>
+              작업 계정{' '}
+              <span className="muted" style={{ fontWeight: 400, fontSize: 12 }}>
+                {(autoAccountIds.length || (accountId ? 1 : 0)) > 1
+                  ? `· ${autoAccountIds.length}개 번갈아 등록`
+                  : '· 여러 개 체크하면 번갈아 등록'}
+              </span>
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              {accounts.map((a) => {
+                const hasProxy = !!(a.proxy_host && a.proxy_port);
+                const on = autoAccountIds.includes(a.id);
+                return (
+                  <label
+                    key={a.id}
+                    title={hasProxy ? '' : '프록시 없는 계정은 완전자동에 쓸 수 없습니다'}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      padding: '6px 12px',
+                      borderRadius: 999,
+                      border: `1.5px solid ${on ? 'var(--blue)' : 'var(--border)'}`,
+                      background: on ? 'var(--blue-soft, #eef4ff)' : 'transparent',
+                      color: hasProxy ? 'var(--text)' : 'var(--text-sub)',
+                      fontSize: 13,
+                      cursor: hasProxy && !auto.running ? 'pointer' : 'not-allowed',
+                      opacity: hasProxy ? 1 : 0.55,
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={on}
+                      disabled={!hasProxy || auto.running}
+                      onChange={() => toggleAutoAccount(a.id)}
+                      style={{ margin: 0 }}
+                    />
+                    {a.naver_id}
+                    {!hasProxy && ' (프록시 없음)'}
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        )}
         {auto.running && (
           <div style={{ marginTop: 14, display: 'flex', alignItems: 'center', gap: 10 }}>
             <span className="dot" style={{ background: 'var(--blue)' }} />

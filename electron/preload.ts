@@ -69,8 +69,13 @@ const api = {
     install: () => ipcRenderer.invoke('update:install'),
   },
   auto: {
-    start: (opts: { accountId: number; submit: boolean; brandId?: number; useCollected?: boolean }) =>
-      ipcRenderer.invoke('auto:start', opts),
+    start: (opts: {
+      accountId?: number;
+      accountIds?: number[];
+      submit: boolean;
+      brandId?: number;
+      useCollected?: boolean;
+    }) => ipcRenderer.invoke('auto:start', opts),
     stop: () => ipcRenderer.invoke('auto:stop'),
     next: () => ipcRenderer.invoke('auto:next'),
     status: () => ipcRenderer.invoke('auto:status'),

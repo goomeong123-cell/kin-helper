@@ -118,7 +118,7 @@ export interface Api {
     install: () => Promise<boolean>;
   };
   auto: {
-    start: (opts: { accountId: number; submit: boolean; brandId?: number; useCollected?: boolean }) => Promise<{ ok: boolean; error?: string }>;
+    start: (opts: { accountId?: number; accountIds?: number[]; submit: boolean; brandId?: number; useCollected?: boolean }) => Promise<{ ok: boolean; error?: string }>;
     stop: () => Promise<boolean>;
     next: () => Promise<boolean>;
     status: () => Promise<{
