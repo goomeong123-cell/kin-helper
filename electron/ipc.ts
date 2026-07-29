@@ -711,6 +711,9 @@ export function registerIpc(ipcMain: IpcMain) {
     while (!autoStop) {
       if (!autoWin || autoWin.isDestroyed()) break;
 
+      // 한 번의 예외로 전체 자동발행이 멈추지 않도록 이터레이션 단위로 감쌈.
+      // 오류가 나면 로그만 남기고 다음 질문으로 계속 진행.
+      try {
       // 현재 계정이 한도에 도달했으면 다음 계정으로 교대 (없으면 종료)
       if (!underLimit(accountId)) {
         pushLog(`[${acc.naver_id}] 하루 한도(${dailyLimit}) 도달`);
@@ -852,11 +855,11 @@ export function registerIpc(ipcMain: IpcMain) {
           db()
             .prepare("UPDATE answers SET account_id=?, status='failed', mode='auto', error=? WHERE id=?")
             .run([accountId, res.error, gen.answer.id]);
-        // 질문은 '시도함'으로 표시 → 다른 계정/다음 실행에서 다시 시도하지 않고 PASS.
+        // 질문은 '시도함(skipped)'으로 표시 → 다른 계정/다음 실행에서 다시 시도하지 않고 PASS.
+        // (questions.status CHECK는 new/answered/skipped만 허용 — 실패도 skipped로 통일.
+        //  실패 상세는 answer row의 status='failed'+error에 남음)
         if (qrow && qrow.id)
-          db()
-            .prepare('UPDATE questions SET status=? WHERE id=?')
-            .run([isFaqErr ? 'skipped' : 'failed', qrow.id]);
+          db().prepare("UPDATE questions SET status='skipped' WHERE id=?").run([qrow.id]);
         if (isFaqErr) {
           pushLog('건너뜀(FAQ 권한 필요): ' + res.error);
           await sleepRnd(1500, 3000);
@@ -905,6 +908,10 @@ export function registerIpc(ipcMain: IpcMain) {
             break;
           }
         }
+      }
+      } catch (e) {
+        pushLog('이 질문 처리 중 오류 — 건너뛰고 계속: ' + (e instanceof Error ? e.message : String(e)));
+        await sleepRnd(4000, 8000);
       }
     }
     autoStatus = autoStop ? '중지됨' : autoStatus;
