@@ -14,6 +14,7 @@ export default function Settings() {
   const [promoRatio, setPromoRatio] = useState(20);
   const [minInt, setMinInt] = useState(90);
   const [maxInt, setMaxInt] = useState(240);
+  const [scanPages, setScanPages] = useState(3);
 
   useEffect(() => {
     (async () => {
@@ -29,6 +30,8 @@ export default function Settings() {
       setPromoRatio(r ? Number(r) : 20);
       const mn = await window.api.settings.get('auto_min_interval');
       const mx = await window.api.settings.get('auto_max_interval');
+      const sp = await window.api.settings.get('scan_max_pages');
+      if (sp) setScanPages(Math.max(1, Math.min(10, Number(sp))));
       setMinInt(mn ? Number(mn) : 90);
       setMaxInt(mx ? Number(mx) : 240);
     })();
@@ -41,6 +44,7 @@ export default function Settings() {
     await window.api.settings.set('promo_ratio', String(promoRatio));
     await window.api.settings.set('auto_min_interval', String(minInt));
     await window.api.settings.set('auto_max_interval', String(Math.max(minInt, maxInt)));
+    await window.api.settings.set('scan_max_pages', String(Math.max(1, Math.min(10, scanPages))));
     toast('설정 저장됨');
   }
 
@@ -137,6 +141,24 @@ export default function Settings() {
             현재: {Math.floor(minInt / 60)}분 {minInt % 60}초 ~ {Math.floor(maxInt / 60)}분 {maxInt % 60}초
           </span>
         </div>
+      </div>
+
+      <div className="card">
+        <label className="label">스캔 페이지 수</label>
+        <div className="page-sub" style={{ marginBottom: 12 }}>
+          질문을 찾을 때 목록 <b>하단의 페이지 번호(1,2,3…)를 눌러가며</b> 몇 페이지까지 훑을지 정합니다.
+          <br />
+          첫 페이지에 새 질문이 없어도 다음 페이지에서 더 찾습니다. <b>1~10</b> (많을수록 더 많이 찾지만 느려짐).
+        </div>
+        <input
+          className="field"
+          type="number"
+          min={1}
+          max={10}
+          style={{ width: 120 }}
+          value={scanPages}
+          onChange={(e) => setScanPages(Number(e.target.value))}
+        />
       </div>
 
       <div className="card">

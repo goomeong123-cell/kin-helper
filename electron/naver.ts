@@ -162,14 +162,61 @@ const SCRAPE_NOANSWER_JS = `
   })();
 `;
 
+/** 목록 하단 페이지 번호(a._page._param('N'))를 인페이지 클릭 (URL 안 바뀜). 그 페이지 없으면 false */
+function goToPageJS(page: number): string {
+  return `
+    (function () {
+      const scope = ${BOX_JS} || document;
+      const want = "_param('" + ${page} + "')";
+      let links = Array.from(scope.querySelectorAll('a._page'));
+      if (!links.length) links = Array.from(document.querySelectorAll("#pagingArea0 a._page, ._pagingArea a._page, a._page"));
+      const target = links.find((a) => (a.className || '').toString().includes(want))
+        || links.find((a) => (a.textContent || '').trim() === String(${page}));
+      if (!target) return false;
+      target.click();
+      return true;
+    })();
+  `;
+}
+
+/** 현재 열린 목록 창에서 1..maxPages 페이지를 돌며 질문을 모아 중복 제거 */
+async function scrapePagesInWin(win: BrowserWindow, maxPages: number): Promise<CollectedQuestion[]> {
+  const all: CollectedQuestion[] = [];
+  const seen = new Set<string>();
+  const pages = Math.max(1, Math.min(10, Math.floor(maxPages) || 1));
+  for (let p = 1; p <= pages; p++) {
+    if (p > 1) {
+      const moved = await win.webContents.executeJavaScript(goToPageJS(p)).catch(() => false);
+      if (!moved) break; // 그 페이지 없음 → 종료
+      await humanDelay(2000, 3200); // 페이지 전환 AJAX 대기
+      await win.webContents.executeJavaScript('window.scrollBy(0, 400);').catch(() => {});
+      await humanDelay(400, 900);
+    }
+    const r = (await win.webContents.executeJavaScript(SCRAPE_NOANSWER_JS).catch(() => [])) as CollectedQuestion[];
+    if (!Array.isArray(r)) continue;
+    let added = 0;
+    for (const q of r) {
+      if (seen.has(q.kinKey)) continue;
+      seen.add(q.kinKey);
+      all.push(q);
+      added++;
+    }
+    // 2페이지 이상인데 새로 추가된 게 없으면(같은 목록 반복 신호) 중단
+    if (p > 1 && added === 0) break;
+  }
+  return all;
+}
+
 /**
  * 답변 대기 질문 목록 수집.
  * keyword가 있으면 지식인 검색 결과(답변 대기)에서, 없으면 전체 대기 목록에서 수집.
  * account가 있으면 해당 세션/프록시로, 없으면 기본 세션으로 수집(로그인 불필요).
+ * maxPages > 1이면 하단 페이지 번호를 눌러가며 여러 페이지를 모음.
  */
 export async function collectQuestions(opts: {
   keyword?: string;
   account?: AccountProxy;
+  maxPages?: number;
 }): Promise<CollectedQuestion[]> {
   const ses = opts.account
     ? await getAccountSession(opts.account)
@@ -202,7 +249,8 @@ export async function collectQuestions(opts: {
     await win.webContents.executeJavaScript('window.scrollBy(0, 500);').catch(() => {});
     await humanDelay(600, 1200);
 
-    const result = (await win.webContents.executeJavaScript(SCRAPE_NOANSWER_JS)) as CollectedQuestion[];
+    // 1페이지부터 maxPages까지 하단 번호를 눌러가며 수집 (기본 1페이지)
+    const result = await scrapePagesInWin(win, opts.maxPages ?? 1);
     return Array.isArray(result) ? result : [];
   } finally {
     win.destroy();
@@ -688,8 +736,9 @@ export async function autoGoToKinAnswerList(win: BrowserWindow): Promise<boolean
   }
 }
 
-/** '답변을 기다리는 질문' 목록에서 질문 추출 (JS 렌더링되므로 실제 창에서 스크랩) */
-export async function autoScrapeWaitingList(win: BrowserWindow): Promise<CollectedQuestion[]> {
+/** '답변을 기다리는 질문' 목록에서 질문 추출 (JS 렌더링되므로 실제 창에서 스크랩).
+ *  maxPages > 1이면 하단 페이지 번호를 눌러가며 여러 페이지를 모음. */
+export async function autoScrapeWaitingList(win: BrowserWindow, maxPages = 1): Promise<CollectedQuestion[]> {
   // 목록이 채워질 때까지 대기 + 사람처럼 스크롤
   for (let i = 0; i < 6; i++) {
     const n = await win.webContents
@@ -703,9 +752,8 @@ export async function autoScrapeWaitingList(win: BrowserWindow): Promise<Collect
     .catch(() => {});
   await humanDelay(600, 1300);
 
-  // '답변 대기 질문' 위젯에서 추출 (검증된 공통 스크래퍼)
-  const r = await win.webContents.executeJavaScript(SCRAPE_NOANSWER_JS).catch(() => []);
-  return Array.isArray(r) ? r : [];
+  // '답변 대기 질문' 위젯에서 1..maxPages 페이지를 돌며 추출 (검증된 공통 스크래퍼)
+  return scrapePagesInWin(win, maxPages);
 }
 
 /** 지식인 검색창에 키워드 검색 → 최신순 정렬 (홍보용) */

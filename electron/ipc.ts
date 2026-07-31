@@ -231,12 +231,13 @@ export function registerIpc(ipcMain: IpcMain) {
         keywords.push({ keyword: '', brandId: null });
       }
 
+      const maxPages = Math.max(1, Math.min(10, Number(getS('scan_max_pages') || '3')));
       let inserted = 0;
       let excludedCount = 0;
       for (const k of keywords) {
         // 이 브랜드(전체면 모든 브랜드 합집합)의 제외 키워드
         const excludeTerms = loadExcludeTerms(k.brandId);
-        const found = await collectQuestions({ keyword: k.keyword || undefined, account });
+        const found = await collectQuestions({ keyword: k.keyword || undefined, account, maxPages });
         const ins = db().prepare(
           `INSERT OR IGNORE INTO questions (kin_key, title, url, content, category, matched_brand_id, matched_keyword, asked_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -842,19 +843,20 @@ export function registerIpc(ipcMain: IpcMain) {
       }
       if (!useCollected) isPromo = !!(keyword && brandId);
 
+      const scanPages = Math.max(1, Math.min(10, Number(getS('scan_max_pages') || '3')));
       let list: Awaited<ReturnType<typeof autoScrapeList>> = [];
       if (!useCollected && isPromo) {
         // 10~11단계: 키워드 검색 → 최신순
         pushLog(`홍보: '${keyword}' 검색 → 최신순`);
         await autoSearchKeyword(autoWin, keyword!);
         if (autoStop || !autoWin || autoWin.isDestroyed()) break;
-        list = await autoScrapeWaitingList(autoWin);
+        list = await autoScrapeWaitingList(autoWin, scanPages);
       } else if (!useCollected) {
         // 3~6단계: 네이버 → 지식iN → 답변하기 → '답변을 기다리는 질문'
         pushLog('일상: 지식iN 답변하기 목록으로 이동');
         await autoGoToKinAnswerList(autoWin);
         if (autoStop || !autoWin || autoWin.isDestroyed()) break;
-        list = await autoScrapeWaitingList(autoWin);
+        list = await autoScrapeWaitingList(autoWin, scanPages);
       }
 
       if (!useCollected) {
