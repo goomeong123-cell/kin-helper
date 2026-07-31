@@ -193,11 +193,16 @@ function advancePageJS(nextNum: number): string {
   `;
 }
 
-/** 현재 열린 목록 창에서 1..maxPages 페이지를 돌며 질문을 모아 중복 제거 */
-async function scrapePagesInWin(win: BrowserWindow, maxPages: number): Promise<CollectedQuestion[]> {
+/** 현재 열린 목록 창에서 페이지를 돌며 질문을 모아 중복 제거.
+ *  limit이 있으면 그만큼 모이면 조기 종료(그만큼 채우려 최대 maxPages까지 넘김). */
+async function scrapePagesInWin(
+  win: BrowserWindow,
+  maxPages: number,
+  limit?: number,
+): Promise<CollectedQuestion[]> {
   const all: CollectedQuestion[] = [];
   const seen = new Set<string>();
-  const pages = Math.max(1, Math.min(10, Math.floor(maxPages) || 1));
+  const pages = Math.max(1, Math.min(20, Math.floor(maxPages) || 1));
   for (let p = 1; p <= pages; p++) {
     if (p > 1) {
       // p번째 페이지로 이동 (번호가 있으면 번호, 없으면 '다음')
@@ -216,22 +221,26 @@ async function scrapePagesInWin(win: BrowserWindow, maxPages: number): Promise<C
       all.push(q);
       added++;
     }
+    // 목표 개수만큼 모였으면 종료
+    if (limit && all.length >= limit) break;
     // 2페이지 이상인데 새로 추가된 게 없으면(같은 목록 반복 신호) 중단
     if (p > 1 && added === 0) break;
   }
-  return all;
+  return limit ? all.slice(0, limit) : all;
 }
 
 /**
  * 답변 대기 질문 목록 수집.
  * keyword가 있으면 지식인 검색 결과(답변 대기)에서, 없으면 전체 대기 목록에서 수집.
  * account가 있으면 해당 세션/프록시로, 없으면 기본 세션으로 수집(로그인 불필요).
+ * limit이 있으면 그 개수만큼 모이도록 페이지를 넘겨가며 수집.
  * maxPages > 1이면 하단 페이지 번호를 눌러가며 여러 페이지를 모음.
  */
 export async function collectQuestions(opts: {
   keyword?: string;
   account?: AccountProxy;
   maxPages?: number;
+  limit?: number;
 }): Promise<CollectedQuestion[]> {
   const ses = opts.account
     ? await getAccountSession(opts.account)
@@ -264,8 +273,10 @@ export async function collectQuestions(opts: {
     await win.webContents.executeJavaScript('window.scrollBy(0, 500);').catch(() => {});
     await humanDelay(600, 1200);
 
-    // 1페이지부터 maxPages까지 하단 번호를 눌러가며 수집 (기본 1페이지)
-    const result = await scrapePagesInWin(win, opts.maxPages ?? 1);
+    // limit이 있으면 그만큼 채우도록 최대 12페이지까지 넘겨가며 수집.
+    // 없으면 maxPages(기본 1)만큼만 수집.
+    const pageCap = opts.limit ? 12 : opts.maxPages ?? 1;
+    const result = await scrapePagesInWin(win, pageCap, opts.limit);
     return Array.isArray(result) ? result : [];
   } finally {
     win.destroy();

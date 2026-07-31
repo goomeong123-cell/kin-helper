@@ -13,6 +13,7 @@ export default function Questions() {
   const [answersByQ, setAnswersByQ] = useState<Record<number, Answer>>({});
   const [accountId, setAccountId] = useState<number | null>(null);
   const [collecting, setCollecting] = useState(false);
+  const [collectCount, setCollectCount] = useState(20);
   const [promoRatio, setPromoRatio] = useState(20);
   const [genAll, setGenAll] = useState(false);
   const [auto, setAuto] = useState<{
@@ -53,6 +54,8 @@ export default function Questions() {
     }
     const r = await window.api.settings.get('promo_ratio');
     setPromoRatio(r ? Number(r) : 20);
+    const cc = await window.api.settings.get('collect_count');
+    if (cc) setCollectCount(Math.max(1, Math.min(500, Number(cc))));
     const qs = await window.api.questions.list({
       status: 'new',
       brandId: activeBrand === 'all' ? undefined : activeBrand,
@@ -126,18 +129,23 @@ export default function Questions() {
   }
 
   async function collect() {
+    const limit = Math.max(1, Math.min(500, collectCount || 20));
     setCollecting(true);
     try {
+      // 다음에도 같은 개수 쓰도록 저장
+      window.api.settings.set('collect_count', String(limit));
       const res = await window.api.questions.collect({
         brandId: activeBrand === 'all' ? undefined : activeBrand,
         accountId: accountId ?? undefined,
+        limit,
       });
       if (!res.ok) toast(res.error || '수집 실패');
       else
         toast(
           `질문 ${res.inserted}건 수집` +
-            (res.keywords && res.keywords.length ? ` (검색: ${res.keywords.join(', ')})` : ' (전체 답변대기)') +
-            (res.excluded ? ` · 제외키워드로 ${res.excluded}건 제외` : ''),
+            (activeBrand === 'all' && res.brands && res.brands > 1 ? ` (${res.brands}개 브랜드 분배)` : '') +
+            (res.keywords && res.keywords.length ? ` (검색: ${res.keywords.join(', ')})` : '') +
+            (res.excluded ? ` · 제외 ${res.excluded}건` : ''),
         );
       await refresh();
     } finally {
@@ -209,6 +217,22 @@ export default function Questions() {
           <div className="page-sub">답변 대기 질문을 수집하고, 자연스러운 답변을 만들어 등록합니다.</div>
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+          <div
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
+            title="이번에 수집할 질문 개수. '전체' 탭이면 브랜드별로 나눠서 수집합니다."
+          >
+            <input
+              className="field"
+              type="number"
+              min={1}
+              max={500}
+              style={{ width: 78 }}
+              value={collectCount}
+              onChange={(e) => setCollectCount(Number(e.target.value))}
+              disabled={collecting}
+            />
+            <span className="muted" style={{ fontSize: 13 }}>개</span>
+          </div>
           <button className="btn" onClick={collect} disabled={collecting}>
             {collecting ? <span className="spinner" /> : '질문 수집'}
           </button>

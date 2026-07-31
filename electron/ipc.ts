@@ -206,20 +206,29 @@ export function registerIpc(ipcMain: IpcMain) {
   /* ---------- 질문 수집 ---------- */
   ipcMain.handle(
     'questions:collect',
-    async (_e, opts: { brandId?: number; accountId?: number }) => {
+    async (_e, opts: { brandId?: number; accountId?: number; limit?: number }) => {
       let account: AccountProxy | undefined;
       if (opts.accountId) {
         const a = db().prepare('SELECT * FROM accounts WHERE id = ?').get([opts.accountId]) as any;
         if (a) account = accountToProxy(a);
       }
 
-      const keywords: Array<{ keyword: string; brandId: number | null }> = [];
-      if (opts.brandId) {
-        // 브랜드 선택 시엔 반드시 그 브랜드 키워드로만 검색.
-        // 키워드가 없으면 전체 목록으로 새지 않고 명확히 알림.
-        const ks = db()
+      // 수집 목표 개수
+      const targetTotal = Math.max(1, Math.min(500, Math.floor(Number(opts.limit ?? getS('collect_count') ?? 20)) || 20));
+
+      // 브랜드의 검색 키워드 목록
+      const kwOf = (bid: number): string[] =>
+        (db()
           .prepare("SELECT keyword FROM keywords WHERE brand_id = ? AND TRIM(keyword) != ''")
-          .all([opts.brandId]) as any[];
+          .all([bid]) as any[]).map((r) => r.keyword as string);
+
+      // 브랜드별 수집 할당량 계산
+      type BrandPlan = { brandId: number | null; keywords: string[]; quota: number };
+      const plans: BrandPlan[] = [];
+
+      if (opts.brandId) {
+        // 특정 브랜드 → 목표 전부 그 브랜드에서
+        const ks = kwOf(opts.brandId);
         if (ks.length === 0) {
           return {
             ok: false,
@@ -227,55 +236,87 @@ export function registerIpc(ipcMain: IpcMain) {
             error: '이 브랜드에 등록된 검색 키워드가 없습니다. 브랜드·제품 탭에서 키워드를 먼저 추가하세요.',
           };
         }
-        for (const k of ks) keywords.push({ keyword: k.keyword, brandId: opts.brandId });
+        plans.push({ brandId: opts.brandId, keywords: ks, quota: targetTotal });
       } else {
-        // 브랜드 미선택(전체) → 키워드 없이 전체 답변대기 목록
-        keywords.push({ keyword: '', brandId: null });
-      }
-
-      const maxPages = Math.max(1, Math.min(10, Number(getS('scan_max_pages') || '3')));
-      let inserted = 0;
-      let excludedCount = 0;
-      for (const k of keywords) {
-        // 이 브랜드(전체면 모든 브랜드 합집합)의 제외 키워드
-        const excludeTerms = loadExcludeTerms(k.brandId);
-        const found = await collectQuestions({ keyword: k.keyword || undefined, account, maxPages });
-        const ins = db().prepare(
-          `INSERT OR IGNORE INTO questions (kin_key, title, url, content, category, matched_brand_id, matched_keyword, asked_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        );
-        for (const q of found) {
-          // 제외 키워드가 제목에 있으면 수집하지 않음
-          if (titleExcluded(q.title, excludeTerms)) {
-            excludedCount++;
-            continue;
-          }
-          // 새로 들어올 질문만 상세 페이지에서 작성 시각을 가져옴 (중복은 건너뜀)
-          const exists = db().prepare('SELECT id FROM questions WHERE kin_key = ?').get([q.kinKey]);
-          let askedAt: string | null = null;
-          if (!exists) {
-            try {
-              const d = await fetchQuestionDetail(q.url);
-              askedAt = d.askedAt || null;
-            } catch {
-              // ignore
-            }
-          }
-          const r = ins.run([
-            q.kinKey,
-            q.title,
-            normalizeKinUrl(q.url),
-            q.content || null,
-            q.category,
-            k.brandId,
-            k.keyword || null,
-            askedAt,
-          ]);
-          if (r.changes > 0) inserted++;
+        // 전체 → 키워드가 있는 모든 브랜드에 1/N 균등 분배 (나머지는 앞쪽 브랜드부터 1개씩)
+        const brands = db().prepare('SELECT id FROM brands ORDER BY created_at ASC').all() as any[];
+        const withKw = brands
+          .map((b) => ({ brandId: b.id as number, keywords: kwOf(b.id) }))
+          .filter((x) => x.keywords.length > 0);
+        if (withKw.length === 0) {
+          // 키워드 있는 브랜드가 하나도 없으면 기존처럼 전체 답변대기 목록에서 수집
+          plans.push({ brandId: null, keywords: [''], quota: targetTotal });
+        } else {
+          const per = Math.floor(targetTotal / withKw.length);
+          const rem = targetTotal % withKw.length;
+          withKw.forEach((x, i) => {
+            const quota = per + (i < rem ? 1 : 0);
+            if (quota > 0) plans.push({ brandId: x.brandId, keywords: x.keywords, quota });
+          });
         }
       }
-      const usedKeywords = keywords.map((k) => k.keyword).filter(Boolean);
-      return { ok: true, inserted, keywords: usedKeywords, excluded: excludedCount };
+
+      const ins = db().prepare(
+        `INSERT OR IGNORE INTO questions (kin_key, title, url, content, category, matched_brand_id, matched_keyword, asked_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+
+      let inserted = 0;
+      let excludedCount = 0;
+      const usedKeywords: string[] = [];
+
+      for (const plan of plans) {
+        const excludeTerms = loadExcludeTerms(plan.brandId);
+        let brandInserted = 0;
+        for (const kw of plan.keywords) {
+          if (brandInserted >= plan.quota) break;
+          const need = plan.quota - brandInserted;
+          // 중복/제외로 빠지는 걸 감안해 목표보다 조금 더 긁어옴(버퍼)
+          const found = await collectQuestions({ keyword: kw || undefined, account, limit: need + 10 });
+          if (kw) usedKeywords.push(kw);
+          for (const q of found) {
+            if (brandInserted >= plan.quota) break;
+            if (titleExcluded(q.title, excludeTerms)) {
+              excludedCount++;
+              continue;
+            }
+            // 새로 들어올 질문만 상세 페이지에서 작성 시각을 가져옴 (중복은 건너뜀)
+            const exists = db().prepare('SELECT id FROM questions WHERE kin_key = ?').get([q.kinKey]);
+            let askedAt: string | null = null;
+            if (!exists) {
+              try {
+                const d = await fetchQuestionDetail(q.url);
+                askedAt = d.askedAt || null;
+              } catch {
+                // ignore
+              }
+            }
+            const r = ins.run([
+              q.kinKey,
+              q.title,
+              normalizeKinUrl(q.url),
+              q.content || null,
+              q.category,
+              plan.brandId,
+              kw || null,
+              askedAt,
+            ]);
+            if (r.changes > 0) {
+              inserted++;
+              brandInserted++;
+            }
+          }
+        }
+      }
+
+      return {
+        ok: true,
+        inserted,
+        keywords: Array.from(new Set(usedKeywords)),
+        excluded: excludedCount,
+        target: targetTotal,
+        brands: plans.length,
+      };
     },
   );
 

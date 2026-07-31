@@ -31,7 +31,7 @@ const api = {
     login: (id: number) => ipcRenderer.invoke('accounts:login', id),
   },
   questions: {
-    collect: (opts: { brandId?: number; accountId?: number }) =>
+    collect: (opts: { brandId?: number; accountId?: number; limit?: number }) =>
       ipcRenderer.invoke('questions:collect', opts),
     list: (opts: { status?: string; brandId?: number }) =>
       ipcRenderer.invoke('questions:list', opts),
