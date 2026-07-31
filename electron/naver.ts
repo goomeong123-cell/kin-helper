@@ -162,19 +162,33 @@ const SCRAPE_NOANSWER_JS = `
   })();
 `;
 
-/** 목록 하단 페이지 번호(a._page._param('N'))를 인페이지 클릭 (URL 안 바뀜). 그 페이지 없으면 false */
-function goToPageJS(page: number): string {
+/**
+ * 다음 페이지로 이동 (URL 안 바뀜).
+ *  - 번호 페이지(a._page._param('N'))가 있으면 그걸 우선 클릭(블록 내 이동)
+ *  - 없으면 '다음' 버튼(a._nextPage) 클릭 — 검색+최신순 결과는 '다음'만 뜸
+ *  - 더 갈 곳이 없으면 false
+ */
+function advancePageJS(nextNum: number): string {
   return `
     (function () {
       const scope = ${BOX_JS} || document;
-      const want = "_param('" + ${page} + "')";
-      let links = Array.from(scope.querySelectorAll('a._page'));
-      if (!links.length) links = Array.from(document.querySelectorAll("#pagingArea0 a._page, ._pagingArea a._page, a._page"));
-      const target = links.find((a) => (a.className || '').toString().includes(want))
-        || links.find((a) => (a.textContent || '').trim() === String(${page}));
-      if (!target) return false;
-      target.click();
-      return true;
+      const want = "_param('" + ${nextNum} + "')";
+      // 1) 번호 페이지가 있으면 우선
+      const pages = Array.from(scope.querySelectorAll('a._page'));
+      const numbered = pages.find((a) => (a.className || '').toString().includes(want))
+        || pages.find((a) => (a.textContent || '').trim() === String(${nextNum}));
+      if (numbered) { numbered.click(); return 'numbered'; }
+      // 2) 번호가 없으면 '다음' 버튼 (검색결과는 다음만 표시)
+      const next = scope.querySelector('a._nextPage, a.next._nextPage')
+        || document.querySelector("#pagingArea0 a._nextPage, ._pagingArea a._nextPage, a._nextPage");
+      if (next) {
+        const cls = (next.className || '').toString();
+        const st = (next.getAttribute('style') || '');
+        if (/disabled|_disabled/.test(cls) || /display\\s*:\\s*none/.test(st)) return false;
+        next.click();
+        return 'next';
+      }
+      return false;
     })();
   `;
 }
@@ -186,8 +200,9 @@ async function scrapePagesInWin(win: BrowserWindow, maxPages: number): Promise<C
   const pages = Math.max(1, Math.min(10, Math.floor(maxPages) || 1));
   for (let p = 1; p <= pages; p++) {
     if (p > 1) {
-      const moved = await win.webContents.executeJavaScript(goToPageJS(p)).catch(() => false);
-      if (!moved) break; // 그 페이지 없음 → 종료
+      // p번째 페이지로 이동 (번호가 있으면 번호, 없으면 '다음')
+      const moved = await win.webContents.executeJavaScript(advancePageJS(p)).catch(() => false);
+      if (!moved) break; // 더 갈 페이지 없음 → 종료
       await humanDelay(2000, 3200); // 페이지 전환 AJAX 대기
       await win.webContents.executeJavaScript('window.scrollBy(0, 400);').catch(() => {});
       await humanDelay(400, 900);
