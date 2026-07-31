@@ -6,7 +6,13 @@ const api = {
     create: (name: string) => ipcRenderer.invoke('brands:create', name),
     update: (
       id: number,
-      fields: { name?: string; promo_text?: string; promo_image?: string; system_prompt?: string },
+      fields: {
+        name?: string;
+        promo_text?: string;
+        promo_image?: string;
+        system_prompt?: string;
+        exclude_keywords?: string;
+      },
     ) => ipcRenderer.invoke('brands:update', id, fields),
     remove: (id: number) => ipcRenderer.invoke('brands:remove', id),
   },

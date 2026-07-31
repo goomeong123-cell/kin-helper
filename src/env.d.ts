@@ -6,6 +6,7 @@ export interface Brand {
   promo_text: string | null;
   promo_image: string | null;
   system_prompt: string | null;
+  exclude_keywords: string | null;
   created_at: string;
 }
 
@@ -64,7 +65,7 @@ export interface Api {
     create: (name: string) => Promise<Brand>;
     update: (
       id: number,
-      fields: Partial<Pick<Brand, 'name' | 'promo_text' | 'promo_image' | 'system_prompt'>>,
+      fields: Partial<Pick<Brand, 'name' | 'promo_text' | 'promo_image' | 'system_prompt' | 'exclude_keywords'>>,
     ) => Promise<Brand>;
     remove: (id: number) => Promise<boolean>;
   };
@@ -81,7 +82,7 @@ export interface Api {
     login: (id: number) => Promise<{ ok: boolean; error?: string }>;
   };
   questions: {
-    collect: (opts: { brandId?: number; accountId?: number }) => Promise<{ ok: boolean; inserted: number; keywords?: string[]; error?: string }>;
+    collect: (opts: { brandId?: number; accountId?: number }) => Promise<{ ok: boolean; inserted: number; keywords?: string[]; excluded?: number; error?: string }>;
     list: (opts: { status?: string; brandId?: number }) => Promise<Question[]>;
     setStatus: (id: number, status: string) => Promise<boolean>;
     remove: (id: number) => Promise<{ ok: boolean; error?: string }>;

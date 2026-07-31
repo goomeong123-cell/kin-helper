@@ -136,7 +136,8 @@ export default function Questions() {
       else
         toast(
           `질문 ${res.inserted}건 수집` +
-            (res.keywords && res.keywords.length ? ` (검색: ${res.keywords.join(', ')})` : ' (전체 답변대기)'),
+            (res.keywords && res.keywords.length ? ` (검색: ${res.keywords.join(', ')})` : ' (전체 답변대기)') +
+            (res.excluded ? ` · 제외키워드로 ${res.excluded}건 제외` : ''),
         );
       await refresh();
     } finally {

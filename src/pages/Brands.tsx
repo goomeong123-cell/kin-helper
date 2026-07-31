@@ -80,6 +80,7 @@ function BrandEditor({ brand, onChange }: { brand: Brand; onChange: () => void }
   const toast = useToast();
   // 홍보용 프롬프트 (기존 홍보문구가 있으면 초안으로 살려둠)
   const [promoPrompt, setPromoPrompt] = useState(brand.system_prompt || brand.promo_text || '');
+  const [excludeKw, setExcludeKw] = useState(brand.exclude_keywords || '');
   const [image, setImage] = useState<string | null>(brand.promo_image);
   const [keywords, setKeywords] = useState<Keyword[]>([]);
   const [newKw, setNewKw] = useState('');
@@ -102,6 +103,7 @@ function BrandEditor({ brand, onChange }: { brand: Brand; onChange: () => void }
     await window.api.brands.update(brand.id, {
       system_prompt: promoPrompt,
       promo_image: image ?? '',
+      exclude_keywords: excludeKw,
     });
     toast('저장됨');
     onChange();
@@ -191,6 +193,20 @@ function BrandEditor({ brand, onChange }: { brand: Brand; onChange: () => void }
             </button>
           )}
         </div>
+        <div style={{ height: 16 }} />
+        <label className="label">제외 키워드 (선택)</label>
+        <div className="page-sub" style={{ marginBottom: 8 }}>
+          <b>질문 제목</b>에 아래 단어/기호가 하나라도 들어 있으면 <b>수집도, 완전자동 발행도 건너뜁니다.</b>
+          <br />
+          여러 개는 <b>쉼표(,)나 줄바꿈</b>으로 구분하세요. 예: <code>(</code> 를 넣으면 제목에 <code>(</code> 가 있는 질문 제외.
+        </div>
+        <textarea
+          className="field"
+          placeholder={'예) (\n주부습진\n이벤트'}
+          value={excludeKw}
+          onChange={(e) => setExcludeKw(e.target.value)}
+          rows={3}
+        />
         <div style={{ marginTop: 18, display: 'flex', gap: 8 }}>
           <button className="btn primary" onClick={save}>
             저장

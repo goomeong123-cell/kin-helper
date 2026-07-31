@@ -40,8 +40,37 @@ function accountToProxy(a: any): AccountProxy {
   };
 }
 
+// 제외 키워드 문자열(줄바꿈/쉼표 구분) → 항목 배열
+function parseExcludeTerms(raw: any): string[] {
+  return String(raw || '')
+    .split(/[\n,]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+// 제목에 제외 키워드가 하나라도 포함되면 true (단순 부분일치, 영문은 대소문자 무시)
+function titleExcluded(title: string, terms: string[]): boolean {
+  if (!terms.length) return false;
+  const hay = String(title || '').toLowerCase();
+  return terms.some((t) => hay.includes(t.toLowerCase()));
+}
+
 export function registerIpc(ipcMain: IpcMain) {
   const db = () => getDb();
+
+  // 브랜드 제외 키워드 로드: brandId 지정 시 그 브랜드, 없으면(일상 등) 모든 브랜드 합집합
+  const loadExcludeTerms = (brandId?: number | null): string[] => {
+    try {
+      const rows = brandId
+        ? (db().prepare('SELECT exclude_keywords FROM brands WHERE id = ?').all([brandId]) as any[])
+        : (db().prepare('SELECT exclude_keywords FROM brands').all() as any[]);
+      const terms: string[] = [];
+      for (const r of rows) terms.push(...parseExcludeTerms(r.exclude_keywords));
+      return Array.from(new Set(terms));
+    } catch {
+      return [];
+    }
+  };
 
   /* ---------- 브랜드 ---------- */
   ipcMain.handle('brands:list', () =>
@@ -53,7 +82,17 @@ export function registerIpc(ipcMain: IpcMain) {
   });
   ipcMain.handle(
     'brands:update',
-    (_e, id: number, fields: { name?: string; promo_text?: string; promo_image?: string; system_prompt?: string }) => {
+    (
+      _e,
+      id: number,
+      fields: {
+        name?: string;
+        promo_text?: string;
+        promo_image?: string;
+        system_prompt?: string;
+        exclude_keywords?: string;
+      },
+    ) => {
       const cur = db().prepare('SELECT * FROM brands WHERE id = ?').get([id]) as any;
       if (!cur) return null;
       const next = {
@@ -61,10 +100,13 @@ export function registerIpc(ipcMain: IpcMain) {
         promo_text: fields.promo_text ?? cur.promo_text,
         promo_image: fields.promo_image ?? cur.promo_image,
         system_prompt: fields.system_prompt ?? cur.system_prompt,
+        exclude_keywords: fields.exclude_keywords ?? cur.exclude_keywords,
       };
       db()
-        .prepare('UPDATE brands SET name=?, promo_text=?, promo_image=?, system_prompt=? WHERE id=?')
-        .run([next.name, next.promo_text, next.promo_image, next.system_prompt, id]);
+        .prepare(
+          'UPDATE brands SET name=?, promo_text=?, promo_image=?, system_prompt=?, exclude_keywords=? WHERE id=?',
+        )
+        .run([next.name, next.promo_text, next.promo_image, next.system_prompt, next.exclude_keywords, id]);
       return db().prepare('SELECT * FROM brands WHERE id = ?').get([id]);
     },
   );
@@ -190,13 +232,21 @@ export function registerIpc(ipcMain: IpcMain) {
       }
 
       let inserted = 0;
+      let excludedCount = 0;
       for (const k of keywords) {
+        // 이 브랜드(전체면 모든 브랜드 합집합)의 제외 키워드
+        const excludeTerms = loadExcludeTerms(k.brandId);
         const found = await collectQuestions({ keyword: k.keyword || undefined, account });
         const ins = db().prepare(
           `INSERT OR IGNORE INTO questions (kin_key, title, url, content, category, matched_brand_id, matched_keyword, asked_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         );
         for (const q of found) {
+          // 제외 키워드가 제목에 있으면 수집하지 않음
+          if (titleExcluded(q.title, excludeTerms)) {
+            excludedCount++;
+            continue;
+          }
           // 새로 들어올 질문만 상세 페이지에서 작성 시각을 가져옴 (중복은 건너뜀)
           const exists = db().prepare('SELECT id FROM questions WHERE kin_key = ?').get([q.kinKey]);
           let askedAt: string | null = null;
@@ -222,7 +272,7 @@ export function registerIpc(ipcMain: IpcMain) {
         }
       }
       const usedKeywords = keywords.map((k) => k.keyword).filter(Boolean);
-      return { ok: true, inserted, keywords: usedKeywords };
+      return { ok: true, inserted, keywords: usedKeywords, excluded: excludedCount };
     },
   );
 
@@ -749,6 +799,12 @@ export function registerIpc(ipcMain: IpcMain) {
         keyword = qrow.matched_keyword ?? undefined;
         targetUrl = qrow.url;
         targetTitle = qrow.title;
+        // 브랜드 제외 키워드 해당 시 발행하지 않고 건너뜀 (수집 뒤 제외어를 추가했을 수도 있어 발행 시점에도 재확인)
+        if (titleExcluded(qrow.title, loadExcludeTerms(qrow.matched_brand_id ?? null))) {
+          db().prepare("UPDATE questions SET status='skipped' WHERE id=?").run([qrow.id]);
+          pushLog(`제외 키워드 해당 — 건너뜀: ${String(qrow.title).slice(0, 20)}`);
+          continue;
+        }
         if (brandId) {
           const b = db().prepare('SELECT system_prompt FROM brands WHERE id = ?').get([brandId]) as any;
           isPromo = !!(b?.system_prompt && String(b.system_prompt).trim());
@@ -802,6 +858,13 @@ export function registerIpc(ipcMain: IpcMain) {
       }
 
       if (!useCollected) {
+        // 브랜드 제외 키워드가 제목에 있으면 후보에서 제거 (홍보=그 브랜드, 일상=모든 브랜드 합집합)
+        const excludeTerms = loadExcludeTerms(brandId ?? null);
+        if (excludeTerms.length) {
+          const before = list.length;
+          list = list.filter((q) => !titleExcluded(q.title, excludeTerms));
+          if (before !== list.length) pushLog(`제외 키워드로 ${before - list.length}건 제외`);
+        }
         pushLog(`질문 ${list.length}개 발견`);
         if (autoStop || !autoWin || autoWin.isDestroyed()) break;
 
