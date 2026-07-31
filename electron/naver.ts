@@ -745,6 +745,9 @@ export async function autoGoToKinAnswerList(win: BrowserWindow): Promise<boolean
     // '답변을 기다리는 질문' 탭 활성화 (관심질문 아님)
     await win.webContents.executeJavaScript(ACTIVATE_TAB_JS).catch(() => false);
     await humanDelay(1400, 2400);
+    // 무조건 최신순 유지 — 일상 경로도 최신순으로 정렬 (버튼 없으면 no-op)
+    await win.webContents.executeJavaScript(SORT_RECENT_JS).catch(() => false);
+    await humanDelay(1400, 2200);
     return true;
   } catch {
     return false;
@@ -769,6 +772,35 @@ export async function autoScrapeWaitingList(win: BrowserWindow, maxPages = 1): P
 
   // '답변 대기 질문' 위젯에서 1..maxPages 페이지를 돌며 추출 (검증된 공통 스크래퍼)
   return scrapePagesInWin(win, maxPages);
+}
+
+/** 현재 화면에 표시된 '그 페이지'의 질문만 추출 (페이지 이동 없음).
+ *  지연 페이징용: 페이지1을 보고 답할 게 있으면 여기서 끝, 없을 때만 다음으로 넘긴다. */
+export async function autoScrapeCurrentPage(win: BrowserWindow): Promise<CollectedQuestion[]> {
+  // 목록이 채워질 때까지 대기 + 사람처럼 스크롤
+  for (let i = 0; i < 6; i++) {
+    const n = await win.webContents
+      .executeJavaScript(`document.querySelectorAll('a[href*="detail.naver"]').length;`)
+      .catch(() => 0);
+    if (typeof n === 'number' && n > 0) break;
+    await humanDelay(700, 1300);
+  }
+  await win.webContents
+    .executeJavaScript(`window.scrollBy(0, ${250 + Math.floor(Math.random() * 350)});`)
+    .catch(() => {});
+  await humanDelay(500, 1100);
+  const r = await win.webContents.executeJavaScript(SCRAPE_NOANSWER_JS).catch(() => []);
+  return Array.isArray(r) ? r : [];
+}
+
+/** 다음 페이지로 한 칸 이동 (번호 있으면 번호, 없으면 '다음'). 더 갈 곳 없으면 false */
+export async function autoAdvancePage(win: BrowserWindow, nextNum: number): Promise<boolean> {
+  const moved = await win.webContents.executeJavaScript(advancePageJS(nextNum)).catch(() => false);
+  if (!moved) return false;
+  await humanDelay(2000, 3200); // 페이지 전환 AJAX 대기
+  await win.webContents.executeJavaScript('window.scrollBy(0, 400);').catch(() => {});
+  await humanDelay(400, 900);
+  return true;
 }
 
 /** 지식인 검색창에 키워드 검색 → 최신순 정렬 (홍보용) */

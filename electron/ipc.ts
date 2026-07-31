@@ -14,6 +14,8 @@ import {
   autoIsLoggedIn,
   autoGoToKinAnswerList,
   autoScrapeWaitingList,
+  autoScrapeCurrentPage,
+  autoAdvancePage,
   autoSearchKeyword,
   type AccountProxy,
   type PostMode,
@@ -844,38 +846,48 @@ export function registerIpc(ipcMain: IpcMain) {
       if (!useCollected) isPromo = !!(keyword && brandId);
 
       const scanPages = Math.max(1, Math.min(10, Number(getS('scan_max_pages') || '3')));
-      let list: Awaited<ReturnType<typeof autoScrapeList>> = [];
-      if (!useCollected && isPromo) {
-        // 10~11단계: 키워드 검색 → 최신순
-        pushLog(`홍보: '${keyword}' 검색 → 최신순`);
-        await autoSearchKeyword(autoWin, keyword!);
-        if (autoStop || !autoWin || autoWin.isDestroyed()) break;
-        list = await autoScrapeWaitingList(autoWin, scanPages);
-      } else if (!useCollected) {
-        // 3~6단계: 네이버 → 지식iN → 답변하기 → '답변을 기다리는 질문'
-        pushLog('일상: 지식iN 답변하기 목록으로 이동');
-        await autoGoToKinAnswerList(autoWin);
-        if (autoStop || !autoWin || autoWin.isDestroyed()) break;
-        list = await autoScrapeWaitingList(autoWin, scanPages);
-      }
-
       if (!useCollected) {
-        // 브랜드 제외 키워드가 제목에 있으면 후보에서 제거 (홍보=그 브랜드, 일상=모든 브랜드 합집합)
-        const excludeTerms = loadExcludeTerms(brandId ?? null);
-        if (excludeTerms.length) {
-          const before = list.length;
-          list = list.filter((q) => !titleExcluded(q.title, excludeTerms));
-          if (before !== list.length) pushLog(`제외 키워드로 ${before - list.length}건 제외`);
+        // 페이지1로 이동 (홍보=키워드 검색+최신순 / 일상=답변대기 목록)
+        if (isPromo) {
+          pushLog(`홍보: '${keyword}' 검색 → 최신순`);
+          await autoSearchKeyword(autoWin, keyword!);
+        } else {
+          pushLog('일상: 지식iN 답변하기 목록으로 이동');
+          await autoGoToKinAnswerList(autoWin);
         }
-        pushLog(`질문 ${list.length}개 발견`);
         if (autoStop || !autoWin || autoWin.isDestroyed()) break;
 
-        // 아직 시도한 적 없는 질문만 고르기.
-        // 한 번이라도 시도한 질문(answered/skipped/failed)은 어느 계정이든 다시 시도 안 함.
-        const fresh = list.find((q) => {
-          const row = db().prepare('SELECT status FROM questions WHERE kin_key=?').get([q.kinKey]) as any;
-          return !row || row.status === 'new';
-        });
+        const excludeTerms = loadExcludeTerms(brandId ?? null);
+        // ★ 최신순 유지 + 지연 페이징:
+        //   페이지1(최신)부터 순서대로 보고, '그 페이지'에 답할 질문(미답변+제외아님)이 있으면 즉시 사용.
+        //   있으면 절대 다음 페이지로 넘어가지 않음. 없을 때만 '다음'을 눌러 다음 페이지를 확인.
+        let fresh: Awaited<ReturnType<typeof autoScrapeCurrentPage>>[number] | undefined;
+        let pageNo = 1;
+        while (pageNo <= scanPages) {
+          if (autoStop || !autoWin || autoWin.isDestroyed()) break;
+          const pageList = await autoScrapeCurrentPage(autoWin);
+          const usable = excludeTerms.length
+            ? pageList.filter((q) => !titleExcluded(q.title, excludeTerms))
+            : pageList;
+          fresh = usable.find((q) => {
+            const row = db().prepare('SELECT status FROM questions WHERE kin_key=?').get([q.kinKey]) as any;
+            return !row || row.status === 'new';
+          });
+          if (fresh) {
+            pushLog(`${pageNo}페이지에서 최신 미답변 질문 선택 (이 페이지 ${pageList.length}개)`);
+            break;
+          }
+          // 이 페이지엔 답할 게 없음 → 다음 페이지로 (첫 페이지에 있으면 여기 안 옴)
+          if (pageNo >= scanPages) break;
+          const moved = await autoAdvancePage(autoWin, pageNo + 1);
+          if (!moved) {
+            pushLog(`${pageNo}페이지가 마지막 — 더 볼 페이지 없음`);
+            break;
+          }
+          pushLog(`${pageNo}페이지에 답할 질문 없음 → 다음 페이지로`);
+          pageNo++;
+        }
+
         if (!fresh) {
           pushLog('새 질문 없음 — 잠시 대기');
           await sleepRnd(15000, 30000);
