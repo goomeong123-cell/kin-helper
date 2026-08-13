@@ -27,15 +27,83 @@ const QUESTION_LIST_URL = 'https://kin.naver.com/qna/questionList.naver';
 // 중요: UA 문자열의 크롬 버전을 실제 엔진(Chromium) 버전과 맞춰야 client hints(sec-ch-ua)와
 // 어긋나지 않는다. Electron이 심는 Chromium 버전을 그대로 사용.
 const CHROME_VER = (process.versions.chrome || '130.0.0.0').replace(/^(\d+\.\d+\.\d+\.\d+).*/, '$1');
+const CHROME_MAJOR = CHROME_VER.split('.')[0];
 const CHROME_UA = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_VER} Safari/537.36`;
 
-// WebRTC로 VM의 실제 IP가 새어 나가지 않도록 (프록시 탐지 방지). 창마다 적용.
+// 실제 크롬의 client-hint 값 (Electron은 "Google Chrome" 브랜드가 빠져 있어 봇으로 탐지됨 → 주입)
+const SEC_CH_UA = `"Chromium";v="${CHROME_MAJOR}", "Google Chrome";v="${CHROME_MAJOR}", "Not?A_Brand";v="99"`;
+const SEC_CH_UA_FULL = `"Chromium";v="${CHROME_VER}", "Google Chrome";v="${CHROME_VER}", "Not?A_Brand";v="99.0.0.0"`;
+
+// 매 페이지 로드 시 실행돼 navigator를 진짜 크롬처럼 위장하는 스크립트.
+// userAgentData.brands는 getter가 non-configurable이라, 객체를 통째로 교체해야 'Google Chrome'이 들어감(실측 확인).
+const STEALTH_JS = `
+(function () {
+  try {
+    var brands = [
+      { brand: 'Not?A_Brand', version: '99' },
+      { brand: 'Chromium', version: '${CHROME_MAJOR}' },
+      { brand: 'Google Chrome', version: '${CHROME_MAJOR}' }
+    ];
+    var fvl = [
+      { brand: 'Not?A_Brand', version: '99.0.0.0' },
+      { brand: 'Chromium', version: '${CHROME_VER}' },
+      { brand: 'Google Chrome', version: '${CHROME_VER}' }
+    ];
+    var cp = function (a) { return a.map(function (b) { return { brand: b.brand, version: b.version }; }); };
+    if (navigator.userAgentData) {
+      var fake = {
+        brands: cp(brands),
+        mobile: false,
+        platform: 'Windows',
+        getHighEntropyValues: function (h) {
+          return Promise.resolve({
+            brands: cp(brands), fullVersionList: cp(fvl), mobile: false, platform: 'Windows',
+            platformVersion: '19.0.0', architecture: 'x86', bitness: '64', model: '', uaFullVersion: '${CHROME_VER}'
+          });
+        },
+        toJSON: function () { return { brands: cp(brands), mobile: false, platform: 'Windows' }; }
+      };
+      try { Object.defineProperty(navigator, 'userAgentData', { get: function () { return fake; }, configurable: true }); } catch (e) {}
+    }
+    try { Object.defineProperty(navigator, 'languages', { get: function () { return ['ko-KR', 'ko']; }, configurable: true }); } catch (e) {}
+    if (!window.chrome) { try { window.chrome = {}; } catch (e) {} }
+    if (window.chrome && !window.chrome.runtime) { try { window.chrome.runtime = {}; } catch (e) {} }
+  } catch (e) {}
+})();
+`;
+
+// 세션 위장: 크롬 UA + 한국어 + client-hint 헤더를 실제 크롬 값으로 교체
+function applySessionSpoof(ses: Electron.Session) {
+  ses.setUserAgent(CHROME_UA, 'ko-KR,ko');
+  try {
+    ses.webRequest.onBeforeSendHeaders((details, cb) => {
+      const h = details.requestHeaders;
+      for (const k of Object.keys(h)) {
+        const lk = k.toLowerCase();
+        if (lk === 'sec-ch-ua') h[k] = SEC_CH_UA;
+        else if (lk === 'sec-ch-ua-full-version-list') h[k] = SEC_CH_UA_FULL;
+      }
+      cb({ requestHeaders: h });
+    });
+  } catch {
+    // ignore
+  }
+}
+
+// 창 위장: WebRTC 실제 IP 차단 + 매 페이지 로드 시 navigator를 크롬처럼 위장 주입.
+// (CDP 디버거 방식은 일부 환경에서 hang 위험이 있어 dom-ready 주입으로 처리)
 function hardenWindow(win: BrowserWindow) {
   try {
     win.webContents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
   } catch {
     // ignore
   }
+  const inject = () => {
+    win.webContents.executeJavaScript(STEALTH_JS, true).catch(() => {});
+  };
+  win.webContents.on('dom-ready', inject);
+  win.webContents.on('did-navigate', inject);
+  win.webContents.on('did-navigate-in-page', inject);
 }
 
 // 계정별 프록시 인증 정보 (login 이벤트에서 사용)
@@ -68,8 +136,8 @@ async function getAccountSession(acc: AccountProxy) {
   } else {
     await ses.setProxy({ proxyRules: 'direct://' });
   }
-  // 크롬으로 위장 + 한국어 브라우저로 (Accept-Language: ko-KR). 한국 계정 fingerprint 일치.
-  ses.setUserAgent(CHROME_UA, 'ko-KR');
+  // 크롬으로 위장(UA + 한국어 + client-hint 헤더). 한국 계정 fingerprint 일치.
+  applySessionSpoof(ses);
   return ses;
 }
 
@@ -257,7 +325,7 @@ export async function collectQuestions(opts: {
   const ses = opts.account
     ? await getAccountSession(opts.account)
     : session.fromPartition('persist:kin-collect');
-  if (!opts.account) ses.setUserAgent(CHROME_UA, 'ko-KR'); // 수집 세션도 크롬으로 위장 + 한국어
+  if (!opts.account) applySessionSpoof(ses); // 수집 세션도 크롬으로 위장 (account면 getAccountSession에서 이미 적용)
 
   const win = new BrowserWindow({
     show: false,
@@ -265,7 +333,7 @@ export async function collectQuestions(opts: {
     height: 900,
     webPreferences: { session: ses, offscreen: false },
   });
-  hardenWindow(win);
+  await hardenWindow(win);
 
   try {
     // 항상 questionList 페이지의 '답변 대기 질문' 위젯을 사용.
@@ -380,7 +448,7 @@ export async function openAnswerWindow(opts: {
     title: `답변 작성 · ${opts.account.naverId}`,
     webPreferences: { session: ses },
   });
-  hardenWindow(win);
+  await hardenWindow(win);
 
   try {
     await win.loadURL(opts.question.url);
@@ -580,7 +648,7 @@ export async function openLoginWindow(acc: AccountProxy): Promise<void> {
     title: `네이버 로그인 · ${acc.naverId} — 로그인 후 창을 닫으세요`,
     webPreferences: { session: ses },
   });
-  hardenWindow(win);
+  await hardenWindow(win);
 
   // 로그인 진행 중 주기적으로, 그리고 창 닫을 때 쿠키를 영구 저장
   const timer = setInterval(() => {
@@ -1167,7 +1235,7 @@ export async function openAutoWindow(acc: AccountProxy): Promise<BrowserWindow> 
     title: `완전자동 · ${acc.naverId}`,
     webPreferences: { session: ses },
   });
-  hardenWindow(win);
+  await hardenWindow(win);
   return win;
 }
 
