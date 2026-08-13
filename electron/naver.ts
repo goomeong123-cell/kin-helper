@@ -23,9 +23,20 @@ export interface AccountProxy {
 
 const QUESTION_LIST_URL = 'https://kin.naver.com/qna/questionList.naver';
 
-// 네이버에 "일반 크롬"으로 보이도록 위장하는 User-Agent (Electron/앱 흔적 제거)
-const CHROME_UA =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+// 네이버에 "일반 크롬"으로 보이도록 위장하는 User-Agent (Electron/앱 흔적 제거).
+// 중요: UA 문자열의 크롬 버전을 실제 엔진(Chromium) 버전과 맞춰야 client hints(sec-ch-ua)와
+// 어긋나지 않는다. Electron이 심는 Chromium 버전을 그대로 사용.
+const CHROME_VER = (process.versions.chrome || '130.0.0.0').replace(/^(\d+\.\d+\.\d+\.\d+).*/, '$1');
+const CHROME_UA = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_VER} Safari/537.36`;
+
+// WebRTC로 VM의 실제 IP가 새어 나가지 않도록 (프록시 탐지 방지). 창마다 적용.
+function hardenWindow(win: BrowserWindow) {
+  try {
+    win.webContents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
+  } catch {
+    // ignore
+  }
+}
 
 // 계정별 프록시 인증 정보 (login 이벤트에서 사용)
 const proxyCredById = new Map<number, { user: string; pass: string }>();
@@ -57,7 +68,8 @@ async function getAccountSession(acc: AccountProxy) {
   } else {
     await ses.setProxy({ proxyRules: 'direct://' });
   }
-  ses.setUserAgent(CHROME_UA); // 크롬으로 위장
+  // 크롬으로 위장 + 한국어 브라우저로 (Accept-Language: ko-KR). 한국 계정 fingerprint 일치.
+  ses.setUserAgent(CHROME_UA, 'ko-KR');
   return ses;
 }
 
@@ -245,7 +257,7 @@ export async function collectQuestions(opts: {
   const ses = opts.account
     ? await getAccountSession(opts.account)
     : session.fromPartition('persist:kin-collect');
-  if (!opts.account) ses.setUserAgent(CHROME_UA); // 수집 세션도 크롬으로 위장
+  if (!opts.account) ses.setUserAgent(CHROME_UA, 'ko-KR'); // 수집 세션도 크롬으로 위장 + 한국어
 
   const win = new BrowserWindow({
     show: false,
@@ -253,6 +265,7 @@ export async function collectQuestions(opts: {
     height: 900,
     webPreferences: { session: ses, offscreen: false },
   });
+  hardenWindow(win);
 
   try {
     // 항상 questionList 페이지의 '답변 대기 질문' 위젯을 사용.
@@ -367,6 +380,7 @@ export async function openAnswerWindow(opts: {
     title: `답변 작성 · ${opts.account.naverId}`,
     webPreferences: { session: ses },
   });
+  hardenWindow(win);
 
   try {
     await win.loadURL(opts.question.url);
@@ -566,6 +580,7 @@ export async function openLoginWindow(acc: AccountProxy): Promise<void> {
     title: `네이버 로그인 · ${acc.naverId} — 로그인 후 창을 닫으세요`,
     webPreferences: { session: ses },
   });
+  hardenWindow(win);
 
   // 로그인 진행 중 주기적으로, 그리고 창 닫을 때 쿠키를 영구 저장
   const timer = setInterval(() => {
@@ -1145,13 +1160,15 @@ export async function typeIntoEditorHuman(
 /** 완전자동용 브라우저 창 (계정 세션·프록시·크롬 UA) */
 export async function openAutoWindow(acc: AccountProxy): Promise<BrowserWindow> {
   const ses = await getAccountSession(acc);
-  return new BrowserWindow({
+  const win = new BrowserWindow({
     show: true,
     width: 1240,
     height: 920,
     title: `완전자동 · ${acc.naverId}`,
     webPreferences: { session: ses },
   });
+  hardenWindow(win);
+  return win;
 }
 
 /** 목록(키워드→tagDetail, 없으면 kinupList) 열고 사람처럼 스크롤 후 질문 추출 */
