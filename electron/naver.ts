@@ -1285,6 +1285,23 @@ export async function autoScrapeList(
  *   답변 열기 = button._answerWriteButton._scrollToEditor
  *   등록      = button#answerRegisterButton._answerRegisterButton
  */
+/** loadURL에 시간 제한 — 프록시/네트워크가 멈춰도 무한 대기하지 않도록. 초과 시 로딩 중단 후 에러. */
+async function loadUrlSafe(win: BrowserWindow, url: string, ms = 35000): Promise<void> {
+  await Promise.race([
+    win.loadURL(url),
+    new Promise<never>((_, rej) => setTimeout(() => rej(new Error('페이지 로딩 시간 초과')), ms)),
+  ]).catch((e: unknown) => {
+    try {
+      win.webContents.stop();
+    } catch {
+      // ignore
+    }
+    const msg = e instanceof Error ? e.message : String(e);
+    if (/ERR_ABORTED/i.test(msg)) return; // 정상적인 로딩 취소는 무시
+    throw e;
+  });
+}
+
 export async function autoOpenAndAnswer(
   win: BrowserWindow,
   url: string,
@@ -1292,7 +1309,7 @@ export async function autoOpenAndAnswer(
   submit: boolean,
 ): Promise<{ typed: boolean; submitted: boolean; error?: string }> {
   try {
-    await win.loadURL(normalizeKinUrl(url));
+    await loadUrlSafe(win, normalizeKinUrl(url));
     await humanDelay(1800, 3400); // 질문 읽는 시간
 
     // FAQ 질문(권한 있는 계정만 답변 가능)이면 건너뜀.

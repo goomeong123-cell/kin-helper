@@ -965,7 +965,23 @@ export function registerIpc(ipcMain: IpcMain) {
       if (autoStop || !autoWin || autoWin.isDestroyed()) break;
 
       pushLog('사람처럼 답변 작성 중…');
-      const res = await autoOpenAndAnswer(autoWin, targetUrl, gen.answer.body, submit);
+      // 전체 안전망: 열기·입력·등록이 제한시간 내 안 끝나면(페이지/네트워크 hang) 실패 처리하고 다음으로.
+      let res: { typed: boolean; submitted: boolean; error?: string };
+      try {
+        res = await Promise.race([
+          autoOpenAndAnswer(autoWin, targetUrl, gen.answer.body, submit),
+          new Promise<never>((_, rej) =>
+            setTimeout(() => rej(new Error('답변 작성 시간 초과(120초) — 페이지/네트워크 지연')), 120000),
+          ),
+        ]);
+      } catch (e) {
+        try {
+          if (autoWin && !autoWin.isDestroyed()) autoWin.webContents.stop();
+        } catch {
+          // ignore
+        }
+        res = { typed: false, submitted: false, error: e instanceof Error ? e.message : String(e) };
+      }
       if (res.error) {
         const isFaqErr = /FAQ/.test(res.error);
         // 답변은 실패로 기록(이력에 빨간 '실패'/'FAQ 실패'로 표시, error 저장).
