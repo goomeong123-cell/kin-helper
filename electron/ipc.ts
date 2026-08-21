@@ -969,7 +969,7 @@ export function registerIpc(ipcMain: IpcMain) {
       let res: { typed: boolean; submitted: boolean; error?: string };
       try {
         res = await Promise.race([
-          autoOpenAndAnswer(autoWin, targetUrl, gen.answer.body, submit),
+          autoOpenAndAnswer(autoWin, targetUrl, gen.answer.body, submit, (s) => pushLog('· ' + s)),
           new Promise<never>((_, rej) =>
             setTimeout(() => rej(new Error('답변 작성 시간 초과(120초) — 페이지/네트워크 지연')), 120000),
           ),

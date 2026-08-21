@@ -68,6 +68,15 @@ const STEALTH_JS = `
     try { Object.defineProperty(navigator, 'languages', { get: function () { return ['ko-KR', 'ko']; }, configurable: true }); } catch (e) {}
     if (!window.chrome) { try { window.chrome = {}; } catch (e) {} }
     if (window.chrome && !window.chrome.runtime) { try { window.chrome.runtime = {}; } catch (e) {} }
+
+    // ★ 중요: 페이지가 alert/confirm/prompt를 띄우면 Electron이 네이티브 모달을 열고
+    //   렌더러가 통째로 얼어 executeJavaScript가 영원히 안 끝난다(= 자동발행 정지).
+    //   에디터의 '임시저장 이어쓰기' 확인창 등이 여기 해당 → 모달 없이 즉시 응답 처리.
+    try { window.alert = function () {}; } catch (e) {}
+    try { window.confirm = function () { return false; }; } catch (e) {}
+    try { window.prompt = function () { return null; }; } catch (e) {}
+    // 페이지 이탈 경고(beforeunload)도 모달 없이 통과시킨다.
+    try { window.onbeforeunload = null; } catch (e) {}
   } catch (e) {}
 })();
 `;
@@ -104,6 +113,21 @@ function hardenWindow(win: BrowserWindow) {
   win.webContents.on('dom-ready', inject);
   win.webContents.on('did-navigate', inject);
   win.webContents.on('did-navigate-in-page', inject);
+
+  // 에디터에 글을 쓴 뒤 다른 질문으로 이동하면 페이지가 이탈 경고(beforeunload)를 띄우는데,
+  // 그러면 Electron이 네이티브 모달을 열고 loadURL이 영원히 끝나지 않는다(= 자동발행 정지).
+  // 항상 '이동 허용'으로 처리해 모달 자체가 뜨지 않게 한다.
+  win.webContents.on('will-prevent-unload', (e) => {
+    e.preventDefault();
+  });
+}
+
+/** executeJavaScript에 시간 제한 — 렌더러가 멈춰도 무한 대기하지 않도록. 초과 시 fallback 반환. */
+async function evalJs<T>(win: BrowserWindow, js: string, fallback: T, ms = 15000): Promise<T> {
+  return (await Promise.race([
+    win.webContents.executeJavaScript(js),
+    new Promise<T>((res) => setTimeout(() => res(fallback), ms)),
+  ]).catch(() => fallback)) as T;
 }
 
 // 계정별 프록시 인증 정보 (login 이벤트에서 사용)
@@ -925,9 +949,9 @@ export async function autoSearchKeyword(win: BrowserWindow, keyword: string): Pr
 async function focusEditorPoint(
   win: BrowserWindow,
 ): Promise<{ x: number; y: number } | null> {
-  const r = await win.webContents
-    .executeJavaScript(
-      `
+  const r = await evalJs<{ x: number; y: number } | null>(
+    win,
+    `
       (function () {
         const big = (el) => { const r = el.getBoundingClientRect(); return r.width > 20 && r.height > 15; };
         // 지식인 답변창은 SmartEditor ONE — contenteditable 속성이 없고 자체 커서를 그린다.
@@ -1016,16 +1040,16 @@ async function focusEditorPoint(
         };
       })();
     `,
-    )
-    .catch(() => null);
+    null,
+  );
   return r && typeof r.x === 'number' ? r : null;
 }
 
 /** 에디터 안 글자 수 (입력 성공 검증용) — SmartEditor(.__se-node) 포함 */
 async function editorTextLength(win: BrowserWindow): Promise<number> {
-  return await win.webContents
-    .executeJavaScript(
-      `
+  return await evalJs<number>(
+    win,
+    `
       (function () {
         // 가장 확실한 신호: SmartEditor는 입력칸이 비면 .se-is-empty 를 붙이고, 글이 들어가면 뗀다.
         const unit = document.querySelector('.se-module-text.__se-unit')
@@ -1064,8 +1088,8 @@ async function editorTextLength(win: BrowserWindow): Promise<number> {
         return 0;
       })();
     `,
-    )
-    .catch(() => 0);
+    0,
+  );
 }
 
 /**
@@ -1074,9 +1098,9 @@ async function editorTextLength(win: BrowserWindow): Promise<number> {
  */
 /** SmartEditor 커서가 실제로 잡혔는지 (깜빡이는 캐럿 또는 포커스된 편집영역) */
 async function caretActive(win: BrowserWindow): Promise<boolean> {
-  return await win.webContents
-    .executeJavaScript(
-      `
+  return await evalJs<boolean>(
+    win,
+    `
       (function () {
         // 가장 정확한 신호: 선택영역이 .se-is-blurred 면 포커스가 풀린 것 (se-is-focused 는 잔여 클래스라 못 믿음)
         const sel = document.querySelector('.se-selection');
@@ -1095,8 +1119,8 @@ async function caretActive(win: BrowserWindow): Promise<boolean> {
         return false;
       })();
     `,
-    )
-    .catch(() => false);
+    false,
+  );
 }
 
 export async function typeIntoEditorHuman(
@@ -1307,8 +1331,17 @@ export async function autoOpenAndAnswer(
   url: string,
   answer: string,
   submit: boolean,
+  onStep?: (s: string) => void,
 ): Promise<{ typed: boolean; submitted: boolean; error?: string }> {
+  const step = (s: string) => {
+    try {
+      onStep?.(s);
+    } catch {
+      // ignore
+    }
+  };
   try {
+    step('질문 페이지 여는 중');
     await loadUrlSafe(win, normalizeKinUrl(url));
     await humanDelay(1800, 3400); // 질문 읽는 시간
 
@@ -1348,26 +1381,28 @@ export async function autoOpenAndAnswer(
     if (already) return { typed: false, submitted: false, error: '이미 답변한 질문(건너뜀)' };
 
     // '답변' 버튼 클릭 → 에디터 열기
-    const opened = await win.webContents
-      .executeJavaScript(
-        `
+    step('답변 버튼 클릭');
+    const opened = await evalJs<boolean>(
+      win,
+      `
         (function () {
           const b = document.querySelector('button._answerWriteButton, .endAnswerButton._answerWriteButton, ._scrollToEditor');
           if (b) { b.click(); return true; }
           return false;
         })();
       `,
-      )
-      .catch(() => false);
+      false,
+    );
     if (!opened) {
       return { typed: false, submitted: false, error: "'답변' 버튼 없음(로그인 상태/페이지 확인)" };
     }
     await humanDelay(1200, 2200);
 
     // 에디터 대기
+    step('입력칸 열림 대기');
     let hasEditor = false;
     for (let i = 0; i < 10; i++) {
-      hasEditor = await win.webContents.executeJavaScript(HAS_EDITOR_JS).catch(() => false);
+      hasEditor = await evalJs<boolean>(win, HAS_EDITOR_JS, false);
       if (hasEditor) break;
       await humanDelay(600, 1100);
     }
@@ -1376,6 +1411,7 @@ export async function autoOpenAndAnswer(
     await humanDelay(1000, 2200);
 
     // 1순위: 실제 키보드 입력 (iframe/SmartEditor에서 확실히 동작)
+    step('본문 입력 중');
     const before = await editorTextLength(win);
     const r = await typeIntoEditorHuman(win, answer);
     let typed = r.ok;
@@ -1393,17 +1429,18 @@ export async function autoOpenAndAnswer(
     if (!submit) return { typed: true, submitted: false };
 
     await humanDelay(1200, 2400);
-    const submitted = await win.webContents
-      .executeJavaScript(
-        `
+    step('등록 버튼 클릭');
+    const submitted = await evalJs<boolean>(
+      win,
+      `
         (function () {
           const b = document.querySelector('#answerRegisterButton, button._answerRegisterButton');
           if (b) { b.click(); return true; }
           return false;
         })();
       `,
-      )
-      .catch(() => false);
+      false,
+    );
     if (!submitted) return { typed: true, submitted: false, error: "'등록' 버튼을 찾지 못함" };
     await humanDelay(1500, 2600); // 등록 처리 대기
     return { typed: true, submitted: true };
