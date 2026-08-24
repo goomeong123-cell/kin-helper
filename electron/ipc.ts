@@ -14,6 +14,7 @@ import {
   autoIsLoggedIn,
   autoGoToKinAnswerList,
   autoScrapeWaitingList,
+  getLastScanCount,
   autoScrapeCurrentPage,
   autoAdvancePage,
   autoSearchKeyword,
@@ -263,7 +264,12 @@ export function registerIpc(ipcMain: IpcMain) {
 
       let inserted = 0;
       let excludedCount = 0;
+      let scannedCount = 0;
       const usedKeywords: string[] = [];
+
+      // 이미 수집한 질문인지 판별 — 목표 개수에 세지 않고 다음 페이지에서 더 찾게 함
+      const isNew = (kinKey: string) =>
+        !db().prepare('SELECT id FROM questions WHERE kin_key = ?').get([kinKey]);
 
       for (const plan of plans) {
         const excludeTerms = loadExcludeTerms(plan.brandId);
@@ -271,8 +277,14 @@ export function registerIpc(ipcMain: IpcMain) {
         for (const kw of plan.keywords) {
           if (brandInserted >= plan.quota) break;
           const need = plan.quota - brandInserted;
-          // 중복/제외로 빠지는 걸 감안해 목표보다 조금 더 긁어옴(버퍼)
-          const found = await collectQuestions({ keyword: kw || undefined, account, limit: need + 10 });
+          // 제외 키워드로 빠지는 걸 감안해 목표보다 조금 더 긁어옴(버퍼)
+          const found = await collectQuestions({
+            keyword: kw || undefined,
+            account,
+            limit: need + 5,
+            isNew,
+          });
+          scannedCount += getLastScanCount();
           if (kw) usedKeywords.push(kw);
           for (const q of found) {
             if (brandInserted >= plan.quota) break;
@@ -314,6 +326,7 @@ export function registerIpc(ipcMain: IpcMain) {
         inserted,
         keywords: Array.from(new Set(usedKeywords)),
         excluded: excludedCount,
+        scanned: scannedCount, // 훑어본 질문 총수 (이미 수집한 것 포함)
         target: targetTotal,
         brands: plans.length,
       };

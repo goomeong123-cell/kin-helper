@@ -82,7 +82,7 @@ export interface Api {
     login: (id: number) => Promise<{ ok: boolean; error?: string }>;
   };
   questions: {
-    collect: (opts: { brandId?: number; accountId?: number; limit?: number }) => Promise<{ ok: boolean; inserted: number; keywords?: string[]; excluded?: number; target?: number; brands?: number; error?: string }>;
+    collect: (opts: { brandId?: number; accountId?: number; limit?: number }) => Promise<{ ok: boolean; inserted: number; keywords?: string[]; excluded?: number; scanned?: number; target?: number; brands?: number; error?: string }>;
     list: (opts: { status?: string; brandId?: number }) => Promise<Question[]>;
     setStatus: (id: number, status: string) => Promise<boolean>;
     remove: (id: number) => Promise<{ ok: boolean; error?: string }>;

@@ -142,10 +142,10 @@ export default function Questions() {
       if (!res.ok) toast(res.error || '수집 실패');
       else
         toast(
-          `질문 ${res.inserted}건 수집` +
-            (activeBrand === 'all' && res.brands && res.brands > 1 ? ` (${res.brands}개 브랜드 분배)` : '') +
-            (res.keywords && res.keywords.length ? ` (검색: ${res.keywords.join(', ')})` : '') +
-            (res.excluded ? ` · 제외 ${res.excluded}건` : ''),
+          `질문 ${res.inserted}건 신규 수집` +
+            (res.scanned ? ` (${res.scanned}건 훑음 · 나머지는 이미 수집함)` : '') +
+            (activeBrand === 'all' && res.brands && res.brands > 1 ? ` · ${res.brands}개 브랜드 분배` : '') +
+            (res.excluded ? ` · 제외키워드 ${res.excluded}건` : ''),
         );
       await refresh();
     } finally {

@@ -298,14 +298,18 @@ function advancePageJS(nextNum: number): string {
 }
 
 /** 현재 열린 목록 창에서 페이지를 돌며 질문을 모아 중복 제거.
- *  limit이 있으면 그만큼 모이면 조기 종료(그만큼 채우려 최대 maxPages까지 넘김). */
+ *  limit이 있으면 '실제로 쓸 수 있는(=이미 수집하지 않은)' 질문 기준으로 그만큼 모이면 종료.
+ *  isNew가 주어지면 이미 DB에 있는 질문은 목표 개수에 세지 않고 계속 페이지를 넘긴다.
+ *  (예전엔 이미 있는 질문까지 목표에 포함시켜, 앞 페이지가 다 기존 질문이면 신규를 거의 못 가져왔음) */
 async function scrapePagesInWin(
   win: BrowserWindow,
   maxPages: number,
   limit?: number,
+  isNew?: (kinKey: string) => boolean,
 ): Promise<CollectedQuestion[]> {
   const all: CollectedQuestion[] = [];
   const seen = new Set<string>();
+  let scanned = 0; // 훑어본 질문 총수(이미 있는 것 포함)
   const pages = Math.max(1, Math.min(20, Math.floor(maxPages) || 1));
   for (let p = 1; p <= pages; p++) {
     if (p > 1) {
@@ -318,19 +322,29 @@ async function scrapePagesInWin(
     }
     const r = (await win.webContents.executeJavaScript(SCRAPE_NOANSWER_JS).catch(() => [])) as CollectedQuestion[];
     if (!Array.isArray(r)) continue;
-    let added = 0;
+    let uniqueOnPage = 0; // 이 페이지에서 처음 본 질문 수 (같은 목록 반복 감지용)
     for (const q of r) {
       if (seen.has(q.kinKey)) continue;
       seen.add(q.kinKey);
+      uniqueOnPage++;
+      scanned++;
+      // 이미 수집한 질문은 목표 개수에 세지 않는다 (계속 다음 페이지로 더 찾음)
+      if (isNew && !isNew(q.kinKey)) continue;
       all.push(q);
-      added++;
     }
-    // 목표 개수만큼 모였으면 종료
+    // 쓸 수 있는 질문이 목표만큼 모였으면 종료
     if (limit && all.length >= limit) break;
-    // 2페이지 이상인데 새로 추가된 게 없으면(같은 목록 반복 신호) 중단
-    if (p > 1 && added === 0) break;
+    // 2페이지 이상인데 처음 보는 질문이 하나도 없으면(같은 목록 반복 신호) 중단
+    if (p > 1 && uniqueOnPage === 0) break;
   }
+  lastScanCount = scanned;
   return limit ? all.slice(0, limit) : all;
+}
+
+/** 직전 수집에서 실제로 훑어본 질문 수 (진단용 — 몇 개 중 몇 개가 신규였는지 알려주기 위함) */
+let lastScanCount = 0;
+export function getLastScanCount(): number {
+  return lastScanCount;
 }
 
 /**
@@ -345,6 +359,8 @@ export async function collectQuestions(opts: {
   account?: AccountProxy;
   maxPages?: number;
   limit?: number;
+  /** 이미 수집한 질문인지 판별 — 있으면 목표 개수에 세지 않고 다음 페이지에서 더 찾는다 */
+  isNew?: (kinKey: string) => boolean;
 }): Promise<CollectedQuestion[]> {
   const ses = opts.account
     ? await getAccountSession(opts.account)
@@ -378,10 +394,10 @@ export async function collectQuestions(opts: {
     await win.webContents.executeJavaScript('window.scrollBy(0, 500);').catch(() => {});
     await humanDelay(600, 1200);
 
-    // limit이 있으면 그만큼 채우도록 최대 12페이지까지 넘겨가며 수집.
+    // limit이 있으면 '신규' 질문을 그만큼 채우도록 최대 20페이지까지 넘겨가며 수집.
     // 없으면 maxPages(기본 1)만큼만 수집.
-    const pageCap = opts.limit ? 12 : opts.maxPages ?? 1;
-    const result = await scrapePagesInWin(win, pageCap, opts.limit);
+    const pageCap = opts.limit ? 20 : opts.maxPages ?? 1;
+    const result = await scrapePagesInWin(win, pageCap, opts.limit, opts.isNew);
     return Array.isArray(result) ? result : [];
   } finally {
     win.destroy();
