@@ -120,6 +120,23 @@ function hardenWindow(win: BrowserWindow) {
   win.webContents.on('will-prevent-unload', (e) => {
     e.preventDefault();
   });
+
+  // 페이지 로딩이 실패하면 흰 화면 대신 이유를 보여준다 (프록시 문제를 바로 알 수 있게).
+  win.webContents.on('did-fail-load', (_e, errorCode, errorDescription, _url, isMainFrame) => {
+    if (!isMainFrame || errorCode === -3) return; // -3 = 사용자가 취소한 정상 중단
+    const proxyIssue = /PROXY|TUNNEL|ERR_NAME_NOT_RESOLVED|ERR_CONNECTION/i.test(errorDescription || '');
+    const msg = proxyIssue
+      ? '프록시 연결에 실패했습니다.<br>계정·프록시 탭에서 주소·포트·아이디·비밀번호가 맞는지, 프록시가 살아있는지 확인하세요.'
+      : '페이지를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.';
+    const html = `<!doctype html><meta charset="utf-8"><body style="font-family:'Malgun Gothic',sans-serif;padding:48px;color:#191f28">
+      <div style="font-size:20px;font-weight:700;margin-bottom:12px">연결 실패</div>
+      <div style="font-size:15px;line-height:1.7;color:#4e5968">${msg}</div>
+      <div style="margin-top:20px;font-size:13px;color:#8b95a1">오류: ${String(errorDescription || '').replace(/</g, '')} (${errorCode})</div>
+    </body>`;
+    win.webContents
+      .loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
+      .catch(() => {});
+  });
 }
 
 /** executeJavaScript에 시간 제한 — 렌더러가 멈춰도 무한 대기하지 않도록. 초과 시 fallback 반환. */
@@ -132,14 +149,37 @@ async function evalJs<T>(win: BrowserWindow, js: string, fallback: T, ms = 15000
 
 // 계정별 프록시 인증 정보 (login 이벤트에서 사용)
 const proxyCredById = new Map<number, { user: string; pass: string }>();
+// 어떤 창(webContents)이 어떤 계정 것인지 — 프록시 인증을 '그 계정 것'으로 보내기 위함
+const accountByWebContentsId = new Map<number, number>();
 
-app.on('login', (event, _webContents, _request, authInfo, callback) => {
+/** 이 창이 어느 계정 소속인지 기록 (프록시 인증을 계정별로 정확히 보내기 위해 필수) */
+function bindWindowAccount(win: BrowserWindow, accountId: number) {
+  try {
+    const id = win.webContents.id;
+    accountByWebContentsId.set(id, accountId);
+    win.on('closed', () => accountByWebContentsId.delete(id));
+  } catch {
+    // ignore
+  }
+}
+
+app.on('login', (event, webContents, _request, authInfo, callback) => {
   if (authInfo.isProxy) {
-    // 현재 활성 계정들의 프록시 인증을 시도 (가장 최근 것 우선)
-    for (const cred of proxyCredById.values()) {
-      if (cred.user) {
+    // 반드시 '요청한 창의 계정' 프록시 자격증명을 사용해야 한다.
+    // (예전엔 등록된 첫 계정 것을 무조건 보내서, 2번째 이후 계정은 인증 실패 → 흰 화면)
+    const accId = webContents ? accountByWebContentsId.get(webContents.id) : undefined;
+    const cred = accId != null ? proxyCredById.get(accId) : undefined;
+    if (cred && cred.user) {
+      event.preventDefault();
+      callback(cred.user, cred.pass);
+      return;
+    }
+    // 계정을 못 찾았고 등록된 자격증명이 딱 하나뿐이면 그것만 사용 (모호할 땐 보내지 않음)
+    if (accId == null && proxyCredById.size === 1) {
+      const only = proxyCredById.values().next().value;
+      if (only && only.user) {
         event.preventDefault();
-        callback(cred.user, cred.pass);
+        callback(only.user, only.pass);
         return;
       }
     }
@@ -373,6 +413,7 @@ export async function collectQuestions(opts: {
     height: 900,
     webPreferences: { session: ses, offscreen: false },
   });
+  if (opts.account) bindWindowAccount(win, opts.account.id);
   await hardenWindow(win);
 
   try {
@@ -488,6 +529,7 @@ export async function openAnswerWindow(opts: {
     title: `답변 작성 · ${opts.account.naverId}`,
     webPreferences: { session: ses },
   });
+  bindWindowAccount(win, opts.account.id);
   await hardenWindow(win);
 
   try {
@@ -688,6 +730,7 @@ export async function openLoginWindow(acc: AccountProxy): Promise<void> {
     title: `네이버 로그인 · ${acc.naverId} — 로그인 후 창을 닫으세요`,
     webPreferences: { session: ses },
   });
+  bindWindowAccount(win, acc.id);
   await hardenWindow(win);
 
   // 로그인 진행 중 주기적으로, 그리고 창 닫을 때 쿠키를 영구 저장
@@ -699,7 +742,8 @@ export async function openLoginWindow(acc: AccountProxy): Promise<void> {
     persistNaverCookies(ses).catch(() => {});
   });
 
-  await win.loadURL('https://nid.naver.com/nidlogin.login');
+  // 실패해도 예외로 던지지 않는다 — did-fail-load가 창에 원인을 보여준다(흰 화면 방지)
+  await win.loadURL('https://nid.naver.com/nidlogin.login').catch(() => {});
 }
 
 // ==================== 완전자동 (Autopilot) 브라우저 헬퍼 ====================
@@ -1275,6 +1319,7 @@ export async function openAutoWindow(acc: AccountProxy): Promise<BrowserWindow> 
     title: `완전자동 · ${acc.naverId}`,
     webPreferences: { session: ses },
   });
+  bindWindowAccount(win, acc.id);
   await hardenWindow(win);
   return win;
 }
