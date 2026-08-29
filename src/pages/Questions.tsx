@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Account, Answer, Brand, Question } from '../env';
 import { useToast } from '../lib/toast';
 
@@ -33,6 +33,8 @@ export default function Questions() {
   const [autoTab, setAutoTab] = useState<'full' | 'collect'>('full');
   // 완전자동에 참여시킬 계정들 (여러 개면 번갈아 등록 = 로테이션)
   const [autoAccountIds, setAutoAccountIds] = useState<number[]>([]);
+  // 저장된 선택 복원이 끝났는지 (끝나기 전엔 저장하지 않아 기존 선택을 덮어쓰지 않음)
+  const restoredRef = useRef(false);
 
   async function loadDrafts() {
     const drafts = await window.api.answers.drafts();
@@ -44,14 +46,20 @@ export default function Questions() {
   async function refresh() {
     const b = await window.api.brands.list();
     setBrands(b);
+    // 복원된 브랜드가 그새 삭제됐으면 '전체'로 되돌림
+    setActiveBrand((cur) => (cur === 'all' || b.some((x) => x.id === cur) ? cur : 'all'));
     const acc = await window.api.accounts.list();
     setAccounts(acc);
-    if (acc.length && accountId === null) setAccountId(acc[0].id);
+    // 복원된 계정 중 삭제된 것은 제외
+    if (acc.length) setAutoAccountIds((cur) => cur.filter((id) => acc.some((a) => a.id === id)));
+    // 기본값은 '아직 아무것도 안 정해졌을 때'만 적용 (복원된 선택을 덮지 않도록 함수형 갱신 사용)
+    setAccountId((cur) => (cur != null ? cur : acc.length ? acc[0].id : null));
     // 완전자동 계정 기본값: 프록시 있는 첫 계정 하나 (사용자가 체크로 더 추가)
-    if (acc.length && autoAccountIds.length === 0) {
+    setAutoAccountIds((cur) => {
+      if (cur.length) return cur;
       const firstProxied = acc.find((a) => a.proxy_host && a.proxy_port);
-      if (firstProxied) setAutoAccountIds([firstProxied.id]);
-    }
+      return firstProxied ? [firstProxied.id] : cur;
+    });
     const r = await window.api.settings.get('promo_ratio');
     setPromoRatio(r ? Number(r) : 20);
     const cc = await window.api.settings.get('collect_count');
@@ -66,6 +74,47 @@ export default function Questions() {
     const st = await window.api.answers.generateAllStatus();
     setGenAll(st.running);
   }
+
+  // 탭을 옮겼다 돌아와도(=컴포넌트가 다시 만들어져도) 작업하던 선택이 그대로 유지되도록 복원.
+  // 저장은 설정 DB에 하므로 앱을 껐다 켜도 유지된다.
+  useEffect(() => {
+    (async () => {
+      try {
+        const [ids, sub, tab, brand, acc] = await Promise.all([
+          window.api.settings.get('ui_auto_account_ids'),
+          window.api.settings.get('ui_auto_submit'),
+          window.api.settings.get('ui_auto_tab'),
+          window.api.settings.get('ui_active_brand'),
+          window.api.settings.get('ui_account_id'),
+        ]);
+        if (ids) {
+          const parsed = String(ids)
+            .split(',')
+            .map((s) => Number(s))
+            .filter((n) => Number.isFinite(n) && n > 0);
+          if (parsed.length) setAutoAccountIds(parsed);
+        }
+        if (sub === '1' || sub === '0') setAutoSubmit(sub === '1');
+        if (tab === 'full' || tab === 'collect') setAutoTab(tab);
+        if (brand) setActiveBrand(brand === 'all' ? 'all' : Number(brand));
+        if (acc) setAccountId(Number(acc));
+      } catch {
+        // ignore
+      } finally {
+        restoredRef.current = true; // 이 시점부터 변경사항을 저장
+      }
+    })();
+  }, []);
+
+  // 선택이 바뀔 때마다 저장 (복원 완료 전에는 저장하지 않아 저장값을 덮어쓰지 않음)
+  useEffect(() => {
+    if (!restoredRef.current) return;
+    window.api.settings.set('ui_auto_account_ids', autoAccountIds.join(','));
+    window.api.settings.set('ui_auto_submit', autoSubmit ? '1' : '0');
+    window.api.settings.set('ui_auto_tab', autoTab);
+    window.api.settings.set('ui_active_brand', String(activeBrand));
+    if (accountId != null) window.api.settings.set('ui_account_id', String(accountId));
+  }, [autoAccountIds, autoSubmit, autoTab, activeBrand, accountId]);
 
   useEffect(() => {
     refresh();
