@@ -68,6 +68,23 @@ const STEALTH_JS = `
     } catch (e) {}
     var mask = function (fn, name) { try { _masked.set(fn, name); } catch (e) {} return fn; };
 
+    // navigator 속성은 인스턴스가 아니라 Navigator.prototype에 정의해야 한다.
+    // (진짜 크롬은 프로토타입 getter → 인스턴스에 own property가 없음.
+    //  인스턴스에 직접 정의하면 getOwnPropertyDescriptor로 위조가 드러난다)
+    var defineOnNavigator = function (key, getter) {
+      var target = Object.getPrototypeOf(navigator) || navigator;
+      try {
+        Object.defineProperty(target, key, { get: getter, enumerable: true, configurable: true });
+        if (Object.getOwnPropertyDescriptor(navigator, key)) {
+          try { delete navigator[key]; } catch (e2) {}
+        }
+        return true;
+      } catch (e) {
+        try { Object.defineProperty(navigator, key, { get: getter, configurable: true }); } catch (e3) {}
+        return false;
+      }
+    };
+
     if (navigator.userAgentData) {
       // 평범한 객체로 바꾸면 Object.prototype.toString.call()이 [object Object]가 되어 위조가 드러난다.
       // 원래 프로토타입을 유지한 객체를 만들어 [object NavigatorUAData] / instanceof 를 그대로 보존.
@@ -88,11 +105,58 @@ const STEALTH_JS = `
       var _tj = mask(function toJSON() { return { brands: cp(brands), mobile: false, platform: 'Windows' }; }, 'toJSON');
       try { Object.defineProperty(fake, 'getHighEntropyValues', { value: _ghev, writable: true, configurable: true }); } catch (e) {}
       try { Object.defineProperty(fake, 'toJSON', { value: _tj, writable: true, configurable: true }); } catch (e) {}
-      try { Object.defineProperty(navigator, 'userAgentData', { get: function () { return fake; }, configurable: true }); } catch (e) {}
+      // 반드시 Navigator.prototype에 정의한다.
+      // navigator 인스턴스에 직접 정의하면 getOwnPropertyDescriptor(navigator,...)로 위조가 드러남
+      // (진짜 크롬은 프로토타입 getter라 인스턴스에는 own property가 없다)
+      defineOnNavigator('userAgentData', function () { return fake; });
     }
-    try { Object.defineProperty(navigator, 'languages', { get: function () { return ['ko-KR', 'ko']; }, configurable: true }); } catch (e) {}
-    if (!window.chrome) { try { window.chrome = {}; } catch (e) {} }
-    if (window.chrome && !window.chrome.runtime) { try { window.chrome.runtime = {}; } catch (e) {} }
+    defineOnNavigator('languages', function () { return ['ko-KR', 'ko']; });
+
+    // window.chrome: 진짜 크롬은 app/csi/loadTimes/runtime을 갖는다.
+    // runtime 하나만 있는 상태는 봇 탐지가 바로 잡아내므로 형태를 맞춘다.
+    try {
+      if (!window.chrome) window.chrome = {};
+      var ch = window.chrome;
+      if (!ch.runtime) ch.runtime = {};
+      if (typeof ch.loadTimes !== 'function') {
+        ch.loadTimes = mask(function loadTimes() {
+          var t = (performance && performance.timing) ? performance.timing : {};
+          var nav0 = (t.navigationStart || Date.now()) / 1000;
+          return {
+            requestTime: nav0,
+            startLoadTime: nav0,
+            commitLoadTime: nav0 + 0.15,
+            finishDocumentLoadTime: nav0 + 0.4,
+            finishLoadTime: nav0 + 0.6,
+            firstPaintTime: nav0 + 0.35,
+            firstPaintAfterLoadTime: 0,
+            navigationType: 'Other',
+            wasFetchedViaSpdy: true,
+            wasNpnNegotiated: true,
+            npnNegotiatedProtocol: 'h2',
+            wasAlternateProtocolAvailable: false,
+            connectionInfo: 'h2'
+          };
+        }, 'loadTimes');
+      }
+      if (typeof ch.csi !== 'function') {
+        ch.csi = mask(function csi() {
+          var t = (performance && performance.timing) ? performance.timing : {};
+          var start = t.navigationStart || Date.now();
+          return { startE: start, onloadT: start + 600, pageT: (Date.now() - start), tran: 15 };
+        }, 'csi');
+      }
+      if (!ch.app) {
+        ch.app = {
+          isInstalled: false,
+          InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
+          RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' },
+          getDetails: mask(function getDetails() { return null; }, 'getDetails'),
+          getIsInstalled: mask(function getIsInstalled() { return false; }, 'getIsInstalled'),
+          runningState: mask(function runningState() { return 'cannot_run'; }, 'runningState')
+        };
+      }
+    } catch (e) {}
 
     // 대화상자 무력화는 '답변 에디터가 있는 지식인'에서만 적용한다.
     // (페이지가 alert/confirm을 띄우면 Electron 네이티브 모달이 열려 렌더러가 얼어붙고
@@ -110,6 +174,14 @@ const STEALTH_JS = `
 // 세션 위장: 크롬 UA + 한국어 + client-hint 헤더를 실제 크롬 값으로 교체
 function applySessionSpoof(ses: Electron.Session) {
   ses.setUserAgent(CHROME_UA, 'ko-KR,ko');
+  // Electron은 기본적으로 모든 권한을 허용해서 Notification.permission이 'granted'가 된다.
+  // 물어본 적도 없는데 허용 상태인 건 실제 크롬에선 불가능 → 봇 신호. 거부(=사용자가 차단)로 맞춘다.
+  try {
+    ses.setPermissionRequestHandler((_wc, _perm, cb) => cb(false));
+    ses.setPermissionCheckHandler(() => false);
+  } catch {
+    // ignore
+  }
   try {
     ses.webRequest.onBeforeSendHeaders((details, cb) => {
       const h = details.requestHeaders;
