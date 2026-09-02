@@ -50,33 +50,59 @@ const STEALTH_JS = `
       { brand: 'Google Chrome', version: '${CHROME_VER}' }
     ];
     var cp = function (a) { return a.map(function (b) { return { brand: b.brand, version: b.version }; }); };
+
+    // 덮어쓴 함수가 '네이티브 함수'처럼 보이게 위장한다.
+    // (그냥 덮어쓰면 fn.toString()이 "function () {}"로 나와서 봇 탐지에 바로 걸림)
+    var _origToString = Function.prototype.toString;
+    var _masked = new WeakMap();
+    var _patchedToString = function toString() {
+      var n = _masked.get(this);
+      if (n) return 'function ' + n + '() { [native code] }';
+      return _origToString.call(this);
+    };
+    _masked.set(_patchedToString, 'toString');
+    try {
+      Object.defineProperty(Function.prototype, 'toString', {
+        value: _patchedToString, writable: true, configurable: true
+      });
+    } catch (e) {}
+    var mask = function (fn, name) { try { _masked.set(fn, name); } catch (e) {} return fn; };
+
     if (navigator.userAgentData) {
-      var fake = {
-        brands: cp(brands),
-        mobile: false,
-        platform: 'Windows',
-        getHighEntropyValues: function (h) {
-          return Promise.resolve({
-            brands: cp(brands), fullVersionList: cp(fvl), mobile: false, platform: 'Windows',
-            platformVersion: '19.0.0', architecture: 'x86', bitness: '64', model: '', uaFullVersion: '${CHROME_VER}'
-          });
-        },
-        toJSON: function () { return { brands: cp(brands), mobile: false, platform: 'Windows' }; }
+      // 평범한 객체로 바꾸면 Object.prototype.toString.call()이 [object Object]가 되어 위조가 드러난다.
+      // 원래 프로토타입을 유지한 객체를 만들어 [object NavigatorUAData] / instanceof 를 그대로 보존.
+      var _proto = Object.getPrototypeOf(navigator.userAgentData);
+      var fake = Object.create(_proto);
+      var defGet = function (obj, key, val) {
+        try { Object.defineProperty(obj, key, { get: function () { return val(); }, enumerable: true, configurable: true }); } catch (e) {}
       };
+      defGet(fake, 'brands', function () { return cp(brands); });
+      defGet(fake, 'mobile', function () { return false; });
+      defGet(fake, 'platform', function () { return 'Windows'; });
+      var _ghev = mask(function getHighEntropyValues(h) {
+        return Promise.resolve({
+          brands: cp(brands), fullVersionList: cp(fvl), mobile: false, platform: 'Windows',
+          platformVersion: '19.0.0', architecture: 'x86', bitness: '64', model: '', uaFullVersion: '${CHROME_VER}'
+        });
+      }, 'getHighEntropyValues');
+      var _tj = mask(function toJSON() { return { brands: cp(brands), mobile: false, platform: 'Windows' }; }, 'toJSON');
+      try { Object.defineProperty(fake, 'getHighEntropyValues', { value: _ghev, writable: true, configurable: true }); } catch (e) {}
+      try { Object.defineProperty(fake, 'toJSON', { value: _tj, writable: true, configurable: true }); } catch (e) {}
       try { Object.defineProperty(navigator, 'userAgentData', { get: function () { return fake; }, configurable: true }); } catch (e) {}
     }
     try { Object.defineProperty(navigator, 'languages', { get: function () { return ['ko-KR', 'ko']; }, configurable: true }); } catch (e) {}
     if (!window.chrome) { try { window.chrome = {}; } catch (e) {} }
     if (window.chrome && !window.chrome.runtime) { try { window.chrome.runtime = {}; } catch (e) {} }
 
-    // ★ 중요: 페이지가 alert/confirm/prompt를 띄우면 Electron이 네이티브 모달을 열고
-    //   렌더러가 통째로 얼어 executeJavaScript가 영원히 안 끝난다(= 자동발행 정지).
-    //   에디터의 '임시저장 이어쓰기' 확인창 등이 여기 해당 → 모달 없이 즉시 응답 처리.
-    try { window.alert = function () {}; } catch (e) {}
-    try { window.confirm = function () { return false; }; } catch (e) {}
-    try { window.prompt = function () { return null; }; } catch (e) {}
-    // 페이지 이탈 경고(beforeunload)도 모달 없이 통과시킨다.
-    try { window.onbeforeunload = null; } catch (e) {}
+    // 대화상자 무력화는 '답변 에디터가 있는 지식인'에서만 적용한다.
+    // (페이지가 alert/confirm을 띄우면 Electron 네이티브 모달이 열려 렌더러가 얼어붙고
+    //  자동발행이 멈추기 때문. 다만 로그인 페이지에서는 건드리지 않아 위조 흔적을 남기지 않는다)
+    if (/(^|\\.)kin\\.naver\\.com$/.test(location.hostname)) {
+      try { window.alert = mask(function alert() {}, 'alert'); } catch (e) {}
+      try { window.confirm = mask(function confirm() { return false; }, 'confirm'); } catch (e) {}
+      try { window.prompt = mask(function prompt() { return null; }, 'prompt'); } catch (e) {}
+      try { window.onbeforeunload = null; } catch (e) {}
+    }
   } catch (e) {}
 })();
 `;
@@ -681,12 +707,17 @@ export async function openAnswerWindow(opts: {
  * NID_SES 등은 만료일 없는 '세션 쿠키'라 앱을 끄면 사라져서 매번 재로그인하게 된다.
  * → 만료일(30일)을 붙여 다시 저장하면 앱 재시작·업데이트 후에도 로그인이 유지됨.
  */
+// 로그인 유지에 필요한 인증 쿠키만 영구화한다.
+// 다른 세션 쿠키(로그인 절차 상태값 등)까지 얼리면 네이버가 로그인을 무효화한다.
+const PERSIST_COOKIE_NAMES = new Set(['NID_AUT', 'NID_SES', 'NID_JKL']);
+
 export async function persistNaverCookies(ses: Electron.Session): Promise<number> {
   let saved = 0;
   try {
     const cookies = await ses.cookies.get({ domain: '.naver.com' });
     const expirationDate = Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 30; // 30일
     for (const c of cookies) {
+      if (!PERSIST_COOKIE_NAMES.has(c.name)) continue; // 인증 쿠키만
       if (c.expirationDate) continue; // 이미 영구 쿠키
       const host = (c.domain || '').replace(/^\./, '');
       if (!host) continue;
@@ -733,12 +764,10 @@ export async function openLoginWindow(acc: AccountProxy): Promise<void> {
   bindWindowAccount(win, acc.id);
   await hardenWindow(win);
 
-  // 로그인 진행 중 주기적으로, 그리고 창 닫을 때 쿠키를 영구 저장
-  const timer = setInterval(() => {
-    persistNaverCookies(ses).catch(() => {});
-  }, 5000);
+  // 로그인이 '끝난 뒤'에만 쿠키를 영구 저장한다.
+  // (예전엔 5초마다 저장해서, 로그인 절차가 진행 중인데도 쿠키를 덮어써 세션이 깨지고
+  //  곧바로 로그아웃 → 재로그인 반복 → 보호조치로 이어질 수 있었음)
   win.on('closed', () => {
-    clearInterval(timer);
     persistNaverCookies(ses).catch(() => {});
   });
 
