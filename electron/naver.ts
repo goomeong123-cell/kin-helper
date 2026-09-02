@@ -1455,7 +1455,32 @@ export async function autoOpenAndAnswer(
       false,
     );
     if (!opened) {
-      return { typed: false, submitted: false, error: "'답변' 버튼 없음(로그인 상태/페이지 확인)" };
+      // 왜 버튼이 없는지 진단 정보를 남긴다 (로그인 풀림 / 마감된 질문 / 페이지 이상 구분)
+      const d = await evalJs<{ loggedIn: boolean; closed: boolean; blocked: boolean; head: string } | null>(
+        win,
+        `
+        (function () {
+          const t = (document.body ? (document.body.innerText || '') : '').slice(0, 3000);
+          return {
+            loggedIn: !!document.querySelector('a[href*="logout"], .gnb_my, #gnb_logout_button, .MyView-module__link_login'),
+            closed: /마감된 질문|종료된 질문|답변을 등록할 수 없|채택이 완료|질문이 삭제/.test(t),
+            blocked: /보호조치|이용이 제한|로그인이 필요|비정상적인 접근/.test(t),
+            head: t.replace(/\\s+/g, ' ').trim().slice(0, 80)
+          };
+        })();
+      `,
+        null,
+      );
+      const why = !d
+        ? '페이지 확인 불가'
+        : d.blocked
+          ? '계정 제한/로그인 필요 상태'
+          : d.closed
+            ? '마감·삭제된 질문(답변 불가)'
+            : !d.loggedIn
+              ? '로그인 풀림'
+              : `버튼 없음 (화면: ${d.head})`;
+      return { typed: false, submitted: false, error: `'답변' 버튼 없음 — ${why}` };
     }
     await humanDelay(1200, 2200);
 
