@@ -977,14 +977,26 @@ export function registerIpc(ipcMain: IpcMain) {
       }
       if (autoStop || !autoWin || autoWin.isDestroyed()) break;
 
-      pushLog('사람처럼 답변 작성 중…');
+      // 사람처럼 한 글자씩 치므로 긴 답변은 그만큼 오래 걸린다(글자당 약 70ms).
+      // 고정 제한(120초)을 쓰면 긴 답변이 무조건 시간 초과되므로 길이에 맞춰 제한을 계산한다.
+      const bodyLen = String(gen.answer.body || '').length;
+      const capMs = Math.max(120000, Math.round(bodyLen * 85) + 90000); // 타이핑 예상 + 여유 90초
+      pushLog(`사람처럼 답변 작성 중… (${bodyLen}자 · 최대 ${Math.round(capMs / 1000)}초)`);
       // 전체 안전망: 열기·입력·등록이 제한시간 내 안 끝나면(페이지/네트워크 hang) 실패 처리하고 다음으로.
       let res: { typed: boolean; submitted: boolean; error?: string };
       try {
         res = await Promise.race([
           autoOpenAndAnswer(autoWin, targetUrl, gen.answer.body, submit, (s) => pushLog('· ' + s)),
           new Promise<never>((_, rej) =>
-            setTimeout(() => rej(new Error('답변 작성 시간 초과(120초) — 페이지/네트워크 지연')), 120000),
+            setTimeout(
+              () =>
+                rej(
+                  new Error(
+                    `답변 작성 시간 초과(${Math.round(capMs / 1000)}초, 본문 ${bodyLen}자) — 페이지/네트워크 지연`,
+                  ),
+                ),
+              capMs,
+            ),
           ),
         ]);
       } catch (e) {
