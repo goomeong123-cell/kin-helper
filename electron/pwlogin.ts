@@ -54,6 +54,85 @@ export function profileDirFor(accountId: number): string {
   return dir;
 }
 
+
+/**
+ * 로그인·작업에서 공통으로 쓰는 크롬 실행 옵션.
+ * ★ 로그인한 환경과 작업 환경이 조금이라도 다르면 네이버가 세션을 의심한다.
+ *   그래서 반드시 같은 옵션·같은 프로필을 쓴다.
+ */
+export function buildContextOptions(acc: AccountProxy) {
+  const fp = deriveFingerprint(acc.naverId || String(acc.id));
+  const proxy =
+    acc.proxyHost && acc.proxyPort
+      ? {
+          server: `http://${acc.proxyHost}:${acc.proxyPort}`,
+          username: acc.proxyUser || undefined,
+          password: acc.proxyPass || undefined,
+        }
+      : undefined;
+  return {
+    headless: false as const,
+    channel: 'chrome' as const,
+    proxy,
+    locale: 'ko-KR',
+    timezoneId: 'Asia/Seoul',
+    viewport: null,
+    args: [
+      '--no-default-browser-check',
+      '--no-first-run',
+      '--window-size=1280,900',
+      '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
+      '--webrtc-ip-handling-policy=disable_non_proxied_udp',
+      '--disable-quic',
+      '--disable-background-timer-throttling',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-renderer-backgrounding',
+    ],
+    ignoreDefaultArgs: [
+      '--enable-automation',
+      '--no-sandbox',
+      '--disable-component-extensions-with-background-pages',
+      '--disable-default-apps',
+      '--disable-extensions',
+      '--disable-component-update',
+    ],
+  };
+}
+
+/**
+ * 자동화 흔적 숨김 + 계정별 지문 분산. 로그인/작업 컨텍스트에 똑같이 적용해야 한다.
+ */
+export async function applyStealthInit(
+  ctx: import('playwright').BrowserContext,
+  acc: AccountProxy,
+): Promise<void> {
+  const fp = deriveFingerprint(acc.naverId || String(acc.id));
+  await ctx.addInitScript(() => {
+    try {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    } catch {
+      /* ignore */
+    }
+    try {
+      Object.defineProperty(navigator, 'languages', { get: () => ['ko-KR', 'ko', 'en'] });
+    } catch {
+      /* ignore */
+    }
+  });
+  await ctx.addInitScript((f: DerivedFp) => {
+    try { Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => f.cores }); } catch { /* ignore */ }
+    try { Object.defineProperty(navigator, 'deviceMemory', { get: () => f.memory }); } catch { /* ignore */ }
+    const sd: Record<string, number> = {
+      width: f.screenW, height: f.screenH,
+      availWidth: f.screenW, availHeight: f.screenH - 40,
+      colorDepth: 24, pixelDepth: 24,
+    };
+    for (const k of Object.keys(sd)) {
+      try { Object.defineProperty((globalThis as any).screen, k, { get: () => sd[k] }); } catch { /* ignore */ }
+    }
+  }, fp);
+}
+
 export interface PwLoginResult {
   ok: boolean;
   error?: string;
@@ -93,37 +172,7 @@ export async function loginWithRealChrome(
   let ctx: import('playwright').BrowserContext | null = null;
   try {
     onStatus?.('진짜 Chrome 실행 중…');
-    ctx = await chromium.launchPersistentContext(profileDirFor(acc.id), {
-      headless: false, // 사람이 직접 로그인해야 하므로 반드시 화면 표시
-      channel: 'chrome', // 시스템에 설치된 진짜 Chrome
-      proxy,
-      locale: 'ko-KR',
-      timezoneId: 'Asia/Seoul',
-      viewport: null, // 실제 창 크기 그대로 (자연스러운 지문)
-      args: [
-        '--no-default-browser-check',
-        '--no-first-run',
-        '--window-size=1280,900',
-        // WebRTC는 프록시를 타지 않고 UDP로 직접 나가서 진짜 IP를 흘릴 수 있다 → 프록시만 쓰게 강제
-        '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
-        '--webrtc-ip-handling-policy=disable_non_proxied_udp',
-        // QUIC(UDP)도 HTTP 프록시를 우회할 수 있으므로 끄고 TCP만 사용
-        '--disable-quic',
-        // 창이 뒤로 가도 렌더러가 멈추지 않게 (백그라운드에서 작업이 정지하던 문제 예방)
-        '--disable-background-timer-throttling',
-        '--disable-backgrounding-occluded-windows',
-        '--disable-renderer-backgrounding',
-      ],
-      // Playwright가 기본으로 붙이는 자동화 표식 제거
-      ignoreDefaultArgs: [
-        '--enable-automation',
-        '--no-sandbox',
-        '--disable-component-extensions-with-background-pages',
-        '--disable-default-apps',
-        '--disable-extensions',
-        '--disable-component-update',
-      ],
-    });
+    ctx = await chromium.launchPersistentContext(profileDirFor(acc.id), buildContextOptions(acc));
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     if (/channel|chrome.*not found|Executable doesn't exist/i.test(msg)) {
@@ -134,31 +183,7 @@ export async function loginWithRealChrome(
 
   try {
     // 자동화 흔적만 가린다. 진짜 크롬이라 그 외에는 위장할 게 없다.
-    await ctx.addInitScript(() => {
-      try {
-        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-      } catch {
-        /* ignore */
-      }
-      try {
-        Object.defineProperty(navigator, 'languages', { get: () => ['ko-KR', 'ko', 'en'] });
-      } catch {
-        /* ignore */
-      }
-    });
-    // 계정마다 다른 기기처럼 보이게 (한 PC에서 여러 계정을 써도 서로 안 묶이도록)
-    await ctx.addInitScript((f: DerivedFp) => {
-      try { Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => f.cores }); } catch { /* ignore */ }
-      try { Object.defineProperty(navigator, 'deviceMemory', { get: () => f.memory }); } catch { /* ignore */ }
-      const sd: Record<string, number> = {
-        width: f.screenW, height: f.screenH,
-        availWidth: f.screenW, availHeight: f.screenH - 40,
-        colorDepth: 24, pixelDepth: 24,
-      };
-      for (const k of Object.keys(sd)) {
-        try { Object.defineProperty((globalThis as any).screen, k, { get: () => sd[k] }); } catch { /* ignore */ }
-      }
-    }, fp);
+    await applyStealthInit(ctx, acc);
 
     const page = ctx.pages()[0] || (await ctx.newPage());
 

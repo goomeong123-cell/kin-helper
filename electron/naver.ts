@@ -21,7 +21,7 @@ export interface AccountProxy {
   proxyPass?: string | null;
 }
 
-const QUESTION_LIST_URL = 'https://kin.naver.com/qna/questionList.naver';
+export const QUESTION_LIST_URL = 'https://kin.naver.com/qna/questionList.naver';
 
 // 네이버에 "일반 크롬"으로 보이도록 위장하는 User-Agent (Electron/앱 흔적 제거).
 // 중요: UA 문자열의 크롬 버전을 실제 엔진(Chromium) 버전과 맞춰야 client hints(sec-ch-ua)와
@@ -367,10 +367,10 @@ export function normalizeKinUrl(u: string): string {
 // 검색버튼 = a._search_button, 최신순 = button._sort_option._param('recent')
 
 // #questionAll 위젯을 찾는 JS 조각 (없으면 관심 아닌 첫 위젯으로 폴백)
-const BOX_JS = `(document.querySelector('#questionAll .content_wrap._noanswer_wrap') || document.querySelector('#questionAll') || [...document.querySelectorAll('.content_wrap._noanswer_wrap')].find(w=>!/interest/i.test((w.closest('[id]')||{}).id||'')) || document.querySelector('.content_wrap._noanswer_wrap'))`;
+export const BOX_JS = `(document.querySelector('#questionAll .content_wrap._noanswer_wrap') || document.querySelector('#questionAll') || [...document.querySelectorAll('.content_wrap._noanswer_wrap')].find(w=>!/interest/i.test((w.closest('[id]')||{}).id||'')) || document.querySelector('.content_wrap._noanswer_wrap'))`;
 
 // 로그인 시 기본 탭이 '관심질문'이라, 먼저 '답변을 기다리는 질문' 탭(#contentsOfMain)을 눌러 활성화해야 함.
-const ACTIVATE_TAB_JS = `
+export const ACTIVATE_TAB_JS = `
   (function () {
     const b = document.querySelector('#contentsOfMain')
       || Array.from(document.querySelectorAll('button[role="tab"]')).find((x) => x.getAttribute('aria-controls') === 'questionQna')
@@ -381,7 +381,7 @@ const ACTIVATE_TAB_JS = `
 `;
 
 /** 위젯 검색창에 키워드 입력 후 검색 실행 (URL 변화 없이 목록만 갱신) */
-function searchInPageJS(keyword: string): string {
+export function searchInPageJS(keyword: string): string {
   return `
     (function () {
       const box = ${BOX_JS};
@@ -404,7 +404,7 @@ function searchInPageJS(keyword: string): string {
 }
 
 /** 위젯의 '최신순' 정렬 버튼 클릭 (#questionAll 내부만) */
-const SORT_RECENT_JS = `
+export const SORT_RECENT_JS = `
   (function () {
     const box = ${BOX_JS} || document;
     const btns = Array.from(box.querySelectorAll('button, a'));
@@ -416,7 +416,7 @@ const SORT_RECENT_JS = `
 `;
 
 /** '답변 대기 질문' 위젯(#questionAll)에서 질문 목록 추출 (미답변만) */
-const SCRAPE_NOANSWER_JS = `
+export const SCRAPE_NOANSWER_JS = `
   (function () {
     const box = ${BOX_JS} || document;
     const out = []; const seen = new Set();
@@ -443,7 +443,7 @@ const SCRAPE_NOANSWER_JS = `
  *  - 없으면 '다음' 버튼(a._nextPage) 클릭 — 검색+최신순 결과는 '다음'만 뜸
  *  - 더 갈 곳이 없으면 false
  */
-function advancePageJS(nextNum: number): string {
+export function advancePageJS(nextNum: number): string {
   return `
     (function () {
       const scope = ${BOX_JS} || document;
@@ -882,7 +882,7 @@ export async function openLoginWindow(acc: AccountProxy): Promise<void> {
 
 // ==================== 완전자동 (Autopilot) 브라우저 헬퍼 ====================
 
-const HAS_EDITOR_JS = `
+export const HAS_EDITOR_JS = `
   (function () {
     if (document.querySelector('[contenteditable="true"], textarea')) return true;
     for (const f of document.querySelectorAll('iframe')) {

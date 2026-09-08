@@ -23,6 +23,14 @@ import {
   type PostMode,
 } from './naver';
 import { loginWithRealChrome, checkProxyExitIp } from './pwlogin';
+import {
+  getAccountContext,
+  closeAccountContext,
+  closeAllKinContexts,
+  pwIsLoggedIn,
+  pwFindQuestion,
+  pwAnswerQuestion,
+} from './pwkin';
 
 const DEFAULT_DAILY_PROMPT =
   '당신은 특정 분야에 경험이 있는 평범한 사람입니다. 네이버 지식인에서 질문에 답합니다. ' +
@@ -739,7 +747,6 @@ export function registerIpc(ipcMain: IpcMain) {
   let autoStop = false;
   let autoStatus = '대기';
   let autoCount = 0;
-  let autoWin: BrowserWindow | null = null;
   let autoNextResolve: (() => void) | null = null;
   const autoLog: string[] = [];
 
@@ -790,13 +797,7 @@ export function registerIpc(ipcMain: IpcMain) {
       autoNextResolve = null;
       r();
     }
-    if (autoWin && !autoWin.isDestroyed()) {
-      try {
-        autoWin.close();
-      } catch {
-        // ignore
-      }
-    }
+    closeAllKinContexts().catch(() => {});
     return true;
   });
 
@@ -838,14 +839,7 @@ export function registerIpc(ipcMain: IpcMain) {
       .finally(() => {
         autoRunning = false;
         autoNextResolve = null;
-        if (autoWin && !autoWin.isDestroyed()) {
-          try {
-            autoWin.close();
-          } catch {
-            // ignore
-          }
-        }
-        autoWin = null;
+        closeAllKinContexts().catch(() => {});
       });
     return { ok: true };
   });
@@ -858,6 +852,8 @@ export function registerIpc(ipcMain: IpcMain) {
     let accountId = -1;
     let acc: any = null;
     let dailyLimit = 5;
+    let prevAccountId: number | null = null;
+    let kinCtx: Awaited<ReturnType<typeof getAccountContext>> | null = null;
 
     // 오늘 이 계정이 아직 한도가 남았는지
     const underLimit = (id: number) => {
@@ -884,30 +880,23 @@ export function registerIpc(ipcMain: IpcMain) {
         }
       }
       if (pick < 0) return false;
-      // 같은 계정이고 창이 살아있으면 그대로 사용 (단일 계정은 창을 다시 열지 않음)
-      if (pick === accountId && autoWin && !autoWin.isDestroyed()) return true;
+      // 같은 계정이면 열려 있는 크롬을 그대로 사용 (단일 계정은 다시 열지 않음)
+      if (pick === accountId && kinCtx) return true;
       accountId = pick;
       acc = db().prepare('SELECT * FROM accounts WHERE id = ?').get([accountId]) as any;
       dailyLimit = acc.daily_limit || 5;
-      // 이전 창은 의도적으로 닫음 — closed 리스너를 떼서 autoStop이 켜지지 않게 함
-      if (autoWin && !autoWin.isDestroyed()) {
-        try {
-          autoWin.removeAllListeners('closed');
-          autoWin.close();
-        } catch {
-          // ignore
-        }
+      // 이전 계정 크롬은 닫고, 이 계정의 크롬(로그인할 때 쓴 그 프로필)을 연다.
+      // ★ 로그인과 작업을 같은 브라우저에서 해야 한다. 쿠키만 다른 브라우저로 옮기면
+      //   네이버가 세션 탈취로 보고 로그아웃시킨다(예전 구조의 실제 원인).
+      if (prevAccountId != null && prevAccountId !== accountId) {
+        await closeAccountContext(prevAccountId).catch(() => {});
       }
-      autoWin = await openAutoWindow(accountToProxy(acc));
-      autoWin.on('closed', () => {
-        autoStop = true;
-        autoWin = null;
-      });
-      // 1~2단계: 네이버 접속 후 로그인 상태 확인 (비밀번호 자동입력은 하지 않음)
-      pushLog(`[${acc.naver_id}] 네이버 접속 · 로그인 확인 중…`);
-      const login = await autoIsLoggedIn(autoWin);
-      if (login.ok) pushLog(`[${acc.naver_id}] 로그인 확인됨 ✓`);
-      else pushLog(`⚠ [${acc.naver_id}] 로그인 확인 실패 (${login.detail}) — 일단 진행`);
+      prevAccountId = accountId;
+      pushLog(`[${acc.naver_id}] 크롬 여는 중 · 로그인 확인…`);
+      kinCtx = await getAccountContext(accountToProxy(acc));
+      const okLogin = await pwIsLoggedIn(kinCtx);
+      if (okLogin) pushLog(`[${acc.naver_id}] 로그인 확인됨 ✓`);
+      else pushLog(`⚠ [${acc.naver_id}] 로그인 안 됨 — 계정·프록시 탭에서 로그인하세요`);
       return true;
     }
 
@@ -918,7 +907,7 @@ export function registerIpc(ipcMain: IpcMain) {
     if (autoStop) return;
 
     while (!autoStop) {
-      if (!autoWin || autoWin.isDestroyed()) break;
+      if (!kinCtx) break;
 
       // 한 번의 예외로 전체 자동발행이 멈추지 않도록 이터레이션 단위로 감쌈.
       // 오류가 나면 로그만 남기고 다음 질문으로 계속 진행.
@@ -1003,46 +992,26 @@ export function registerIpc(ipcMain: IpcMain) {
 
       const scanPages = Math.max(1, Math.min(10, Number(getS('scan_max_pages') || '3')));
       if (!useCollected) {
-        // 페이지1로 이동 (홍보=키워드 검색+최신순 / 일상=답변대기 목록)
-        if (isPromo) {
-          pushLog(`홍보: '${keyword}' 검색 → 최신순`);
-          await autoSearchKeyword(autoWin, keyword!);
-        } else {
-          pushLog('일상: 지식iN 답변하기 목록으로 이동');
-          await autoGoToKinAnswerList(autoWin);
-        }
-        if (autoStop || !autoWin || autoWin.isDestroyed()) break;
-
+        if (!kinCtx) break;
         const excludeTerms = loadExcludeTerms(brandId ?? null);
-        // ★ 최신순 유지 + 지연 페이징:
-        //   페이지1(최신)부터 순서대로 보고, '그 페이지'에 답할 질문(미답변+제외아님)이 있으면 즉시 사용.
-        //   있으면 절대 다음 페이지로 넘어가지 않음. 없을 때만 '다음'을 눌러 다음 페이지를 확인.
-        let fresh: Awaited<ReturnType<typeof autoScrapeCurrentPage>>[number] | undefined;
-        let pageNo = 1;
-        while (pageNo <= scanPages) {
-          if (autoStop || !autoWin || autoWin.isDestroyed()) break;
-          const pageList = await autoScrapeCurrentPage(autoWin);
-          const usable = excludeTerms.length
-            ? pageList.filter((q) => !titleExcluded(q.title, excludeTerms))
-            : pageList;
-          fresh = usable.find((q) => {
-            const row = db().prepare('SELECT status FROM questions WHERE kin_key=?').get([q.kinKey]) as any;
-            return !row || row.status === 'new';
-          });
-          if (fresh) {
-            pushLog(`${pageNo}페이지에서 최신 미답변 질문 선택 (이 페이지 ${pageList.length}개)`);
-            break;
-          }
-          // 이 페이지엔 답할 게 없음 → 다음 페이지로 (첫 페이지에 있으면 여기 안 옴)
-          if (pageNo >= scanPages) break;
-          const moved = await autoAdvancePage(autoWin, pageNo + 1);
-          if (!moved) {
-            pushLog(`${pageNo}페이지가 마지막 — 더 볼 페이지 없음`);
-            break;
-          }
-          pushLog(`${pageNo}페이지에 답할 질문 없음 → 다음 페이지로`);
-          pageNo++;
-        }
+        // ★ 최신순 유지 + 지연 페이징 — 전부 '로그인한 그 크롬'에서 수행한다.
+        //   페이지1(최신)부터 보고, 그 페이지에 답할 질문이 있으면 즉시 사용.
+        //   없을 때만 다음 페이지로 넘어간다.
+        const found = await pwFindQuestion(
+          kinCtx,
+          {
+            keyword: isPromo ? keyword : undefined,
+            scanPages,
+            isUsable: (q) => {
+              if (excludeTerms.length && titleExcluded(q.title, excludeTerms)) return false;
+              const row = db().prepare('SELECT status FROM questions WHERE kin_key=?').get([q.kinKey]) as any;
+              return !row || row.status === 'new';
+            },
+          },
+          (msg) => pushLog(`[${acc.naver_id}] ${msg}`),
+        );
+        const fresh = found.picked;
+        if (autoStop) break;
 
         if (!fresh) {
           pushLog('새 질문 없음 — 잠시 대기');
@@ -1077,7 +1046,7 @@ export function registerIpc(ipcMain: IpcMain) {
         await sleepRnd(5000, 10000);
         continue;
       }
-      if (autoStop || !autoWin || autoWin.isDestroyed()) break;
+      if (autoStop || !kinCtx) break;
 
       // 사람처럼 한 글자씩 치므로 긴 답변은 그만큼 오래 걸린다(글자당 약 70ms).
       // 고정 제한(120초)을 쓰면 긴 답변이 무조건 시간 초과되므로 길이에 맞춰 제한을 계산한다.
@@ -1088,7 +1057,7 @@ export function registerIpc(ipcMain: IpcMain) {
       let res: { typed: boolean; submitted: boolean; error?: string };
       try {
         res = await Promise.race([
-          autoOpenAndAnswer(autoWin, targetUrl, gen.answer.body, submit, (s) => pushLog('· ' + s)),
+          pwAnswerQuestion(kinCtx!, targetUrl, gen.answer.body, submit, (s) => pushLog('· ' + s)),
           new Promise<never>((_, rej) =>
             setTimeout(
               () =>
@@ -1102,11 +1071,6 @@ export function registerIpc(ipcMain: IpcMain) {
           ),
         ]);
       } catch (e) {
-        try {
-          if (autoWin && !autoWin.isDestroyed()) autoWin.webContents.stop();
-        } catch {
-          // ignore
-        }
         res = { typed: false, submitted: false, error: e instanceof Error ? e.message : String(e) };
       }
       if (res.error) {
