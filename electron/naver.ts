@@ -158,6 +158,38 @@ const STEALTH_JS = `
       }
     } catch (e) {}
 
+    // 알림 권한: 처음 방문한 브라우저는 실제 크롬에서 'default'(아직 물어본 적 없음)이다.
+    // Electron 기본값은 'granted', 권한 핸들러로 막으면 'denied'가 되는데 둘 다
+    // "사용자가 손댄 적 없는데 이미 결정돼 있는" 비정상 상태라 봇 신호가 된다.
+    try {
+      if (typeof Notification !== 'undefined') {
+        Object.defineProperty(Notification, 'permission', {
+          get: function () { return 'default'; }, configurable: true
+        });
+      }
+    } catch (e) {}
+    // permissions.query 결과도 맞춘다 (Notification.permission과 어긋나면 그 자체가 대표적인 봇 signature).
+    // 실제 크롬 새 프로필에서 '아직 결정 안 됨(prompt)'인 권한들 — 우리는 전부 denied로 나와서 티가 난다.
+    try {
+      if (navigator.permissions && navigator.permissions.query) {
+        var PROMPT_DEFAULT = ['notifications', 'geolocation', 'camera', 'microphone',
+          'clipboard-read', 'midi', 'push', 'speaker-selection', 'display-capture'];
+        var _origQuery = navigator.permissions.query;
+        var _q = mask(function query(p) {
+          var r = _origQuery.call(navigator.permissions, p);
+          if (p && PROMPT_DEFAULT.indexOf(p.name) >= 0) {
+            return r.then(function (st) {
+              // 실제 PermissionStatus 객체를 유지한 채 state만 바꿔 위조 흔적을 남기지 않는다
+              try { Object.defineProperty(st, 'state', { get: function () { return 'prompt'; }, configurable: true }); } catch (e2) {}
+              return st;
+            });
+          }
+          return r;
+        }, 'query');
+        Object.defineProperty(navigator.permissions, 'query', { value: _q, writable: true, configurable: true });
+      }
+    } catch (e) {}
+
     // 대화상자 무력화는 '답변 에디터가 있는 지식인'에서만 적용한다.
     // (페이지가 alert/confirm을 띄우면 Electron 네이티브 모달이 열려 렌더러가 얼어붙고
     //  자동발행이 멈추기 때문. 다만 로그인 페이지에서는 건드리지 않아 위조 흔적을 남기지 않는다)
