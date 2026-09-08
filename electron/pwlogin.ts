@@ -106,8 +106,13 @@ export async function loginWithRealChrome(
         '--window-size=1280,900',
         // WebRTC는 프록시를 타지 않고 UDP로 직접 나가서 진짜 IP를 흘릴 수 있다 → 프록시만 쓰게 강제
         '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
+        '--webrtc-ip-handling-policy=disable_non_proxied_udp',
         // QUIC(UDP)도 HTTP 프록시를 우회할 수 있으므로 끄고 TCP만 사용
         '--disable-quic',
+        // 창이 뒤로 가도 렌더러가 멈추지 않게 (백그라운드에서 작업이 정지하던 문제 예방)
+        '--disable-background-timer-throttling',
+        '--disable-backgrounding-occluded-windows',
+        '--disable-renderer-backgrounding',
       ],
       // Playwright가 기본으로 붙이는 자동화 표식 제거
       ignoreDefaultArgs: [
@@ -135,6 +140,11 @@ export async function loginWithRealChrome(
       } catch {
         /* ignore */
       }
+      try {
+        Object.defineProperty(navigator, 'languages', { get: () => ['ko-KR', 'ko', 'en'] });
+      } catch {
+        /* ignore */
+      }
     });
     // 계정마다 다른 기기처럼 보이게 (한 PC에서 여러 계정을 써도 서로 안 묶이도록)
     await ctx.addInitScript((f: DerivedFp) => {
@@ -151,8 +161,32 @@ export async function loginWithRealChrome(
     }, fp);
 
     const page = ctx.pages()[0] || (await ctx.newPage());
-    onStatus?.('네이버 여는 중…');
-    await page.goto('https://nid.naver.com/nidlogin.login', { waitUntil: 'domcontentloaded' }).catch(() => {});
+
+    // ★ 사람처럼 '네이버 메인 → 로그인 버튼' 순서로 들어간다.
+    //   갓 만든 빈 프로필이 첫 요청부터 로그인 주소로 직행하면(쿠키·리퍼러 없음)
+    //   그 자체가 비정상 접근 신호가 된다. 메인을 먼저 거쳐야 기본 쿠키가 생기고
+    //   리퍼러도 정상으로 남는다. (카페포스터가 쓰는 순서와 동일)
+    onStatus?.('네이버 메인 여는 중…');
+    await page.goto('https://www.naver.com/', { waitUntil: 'domcontentloaded' }).catch(() => {});
+    await new Promise((r) => setTimeout(r, 1200 + Math.floor(Math.random() * 1500)));
+
+    // 메인에서 '로그인' 링크를 실제로 눌러서 이동 (실패하면 주소로 폴백)
+    let clicked = false;
+    try {
+      // 화면에 실제로 보이는 로그인 링크만 클릭 (숨은 요소를 잡으면 타임아웃 남)
+      const link = page.locator('a[href*="nidlogin.login"]:visible, a.link_login:visible').first();
+      if (await link.count()) {
+        await link.scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
+        await link.click({ timeout: 6000 });
+        await page.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => {});
+        clicked = /nidlogin/.test(page.url());
+      }
+    } catch {
+      // 링크를 못 찾거나 클릭 실패 — 아래에서 주소로 이동
+    }
+    if (!clicked && !/nidlogin/.test(page.url())) {
+      await page.goto('https://nid.naver.com/nidlogin.login', { waitUntil: 'domcontentloaded' }).catch(() => {});
+    }
     onStatus?.('브라우저를 열었습니다. 로그인/프로필 설정을 끝내고 창을 닫아 주세요.');
 
     // ★ 로그인이 확인돼도 창을 닫지 않는다.
