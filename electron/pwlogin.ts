@@ -219,10 +219,25 @@ export async function loginWithRealChrome(
         cookies = naverCookies; // 항상 최신 스냅샷 유지
         if (!reported) {
           reported = true;
-          onStatus?.('로그인 확인됨 ✓ — 창은 그대로 두셔도 됩니다 (닫으면 저장)');
+          onStatus?.(
+            '로그인 확인됨 ✓ — ⚠ 메일·페이·내정보는 열지 마세요(추가 본인확인이 걸려 계정이 잠깁니다). 지식인·웹툰 등은 안전합니다.',
+          );
           // 창이 열려 있어도 앱 세션에는 바로 반영해 둔다
           try {
             await onCookies?.(naverCookies);
+          } catch {
+            /* ignore */
+          }
+          // 로그인 직후 지식인으로 이동시킨다.
+          // (네이버 메인에 두면 메일 등 고위험 서비스를 누르기 쉬운데,
+          //  메일은 낯선 기기에서 추가 본인확인을 요구해 계정이 잠기는 원인이 된다)
+          try {
+            const p0 = ctx.pages()[0];
+            if (p0) {
+              await p0
+                .goto('https://kin.naver.com/qna/questionList.naver', { waitUntil: 'domcontentloaded' })
+                .catch(() => {});
+            }
           } catch {
             /* ignore */
           }

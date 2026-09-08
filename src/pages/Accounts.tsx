@@ -51,6 +51,24 @@ export default function Accounts() {
         <div>
           <div className="page-title">계정·프록시</div>
           <div className="page-sub">네이버 ID마다 프록시 IP를 1:1로 연결합니다. 로그인은 각 계정 창에서 직접 하세요.</div>
+          <div
+            style={{
+              marginTop: 10,
+              fontSize: 13,
+              lineHeight: 1.6,
+              color: 'var(--red, #e5484d)',
+              background: 'rgba(229,72,77,0.07)',
+              border: '1px solid rgba(229,72,77,0.18)',
+              borderRadius: 10,
+              padding: '10px 12px',
+            }}
+          >
+            ⚠ 로그인한 창에서 <b>메일 · 페이 · 내정보</b>는 절대 열지 마세요. 이 서비스들은 낯선 기기·IP에서
+            <b> 추가 본인확인</b>을 요구하는데, 여기서 로그아웃된 것처럼 보여 재로그인을 반복하면{' '}
+            <b>계정이 보호조치로 잠깁니다.</b>
+            <br />
+            <b>지식인 · 웹툰 · 카페</b> 등 일반 서비스는 안전합니다. 로그인 확인용으로는 지식인을 이용하세요.
+          </div>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <input
