@@ -80,6 +80,7 @@ export interface Api {
     update: (id: number, fields: Record<string, unknown>) => Promise<Account>;
     remove: (id: number) => Promise<boolean>;
     login: (id: number) => Promise<{ ok: boolean; error?: string }>;
+    openBrowser: (id: number) => Promise<{ ok: boolean; error?: string }>;
   };
   questions: {
     collect: (opts: { brandId?: number; accountId?: number; limit?: number }) => Promise<{ ok: boolean; inserted: number; keywords?: string[]; excluded?: number; scanned?: number; target?: number; brands?: number; error?: string }>;

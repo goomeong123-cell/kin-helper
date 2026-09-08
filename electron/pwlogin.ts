@@ -70,6 +70,8 @@ export interface PwLoginResult {
 export async function loginWithRealChrome(
   acc: AccountProxy,
   onStatus?: (s: string) => void,
+  // 로그인이 확인되는 즉시 호출된다(창은 그대로 열려 있음) — 앱 세션에 바로 반영하기 위함
+  onCookies?: (c: NonNullable<PwLoginResult['cookies']>) => void | Promise<void>,
 ): Promise<PwLoginResult> {
   let chromium: typeof import('playwright').chromium;
   try {
@@ -141,44 +143,56 @@ export async function loginWithRealChrome(
     }, fp);
 
     const page = ctx.pages()[0] || (await ctx.newPage());
-    onStatus?.('네이버 로그인 페이지 여는 중…');
+    onStatus?.('네이버 여는 중…');
     await page.goto('https://nid.naver.com/nidlogin.login', { waitUntil: 'domcontentloaded' }).catch(() => {});
-    onStatus?.('로그인해 주세요. (로그인하면 자동으로 감지합니다)');
+    onStatus?.('브라우저를 열었습니다. 로그인/프로필 설정을 끝내고 창을 닫아 주세요.');
 
-    // 로그인 완료(NID_AUT 발급)까지 대기. 사용자가 창을 닫으면 종료.
+    // ★ 로그인이 확인돼도 창을 닫지 않는다.
+    //   사용자가 프로필 설정을 만지거나 잠깐 둘러볼 수 있어야 하고,
+    //   그렇게 쌓인 히스토리·쿠키가 오히려 계정을 자연스럽게 만든다.
+    //   창을 직접 닫을 때까지 유지하고, 그 사이 쿠키는 계속 최신으로 들고 있는다.
     let closed = false;
     ctx.on('close', () => {
       closed = true;
     });
-    const deadline = Date.now() + 1000 * 60 * 10; // 최대 10분
+    const deadline = Date.now() + 1000 * 60 * 60 * 3; // 안전장치: 최대 3시간
     let cookies: PwLoginResult['cookies'];
+    let reported = false;
     while (!closed && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 2000));
       let cs: Awaited<ReturnType<import('playwright').BrowserContext['cookies']>> = [];
       try {
         cs = await ctx.cookies();
       } catch {
-        break; // 컨텍스트가 닫힘
+        break; // 창이 닫힘 — 마지막으로 들고 있던 쿠키를 사용
       }
-      const hasAuth = cs.some((c) => c.name === 'NID_AUT' && c.value);
-      if (hasAuth) {
-        cookies = cs
-          .filter((c) => /(^|\.)naver\.com$/.test(c.domain.replace(/^\./, '.')) || c.domain.includes('naver.com'))
-          .map((c) => ({
-            name: c.name, value: c.value, domain: c.domain, path: c.path,
-            expires: c.expires, httpOnly: c.httpOnly, secure: c.secure,
-            sameSite: c.sameSite,
-          }));
-        onStatus?.('로그인 확인됨 — 세션을 앱으로 옮기는 중…');
-        break;
+      const naverCookies = cs
+        .filter((c) => (c.domain || '').includes('naver.com'))
+        .map((c) => ({
+          name: c.name, value: c.value, domain: c.domain, path: c.path,
+          expires: c.expires, httpOnly: c.httpOnly, secure: c.secure,
+          sameSite: c.sameSite,
+        }));
+      if (naverCookies.some((c) => c.name === 'NID_AUT' && c.value)) {
+        cookies = naverCookies; // 항상 최신 스냅샷 유지
+        if (!reported) {
+          reported = true;
+          onStatus?.('로그인 확인됨 ✓ — 창은 그대로 두셔도 됩니다 (닫으면 저장)');
+          // 창이 열려 있어도 앱 세션에는 바로 반영해 둔다
+          try {
+            await onCookies?.(naverCookies);
+          } catch {
+            /* ignore */
+          }
+        }
       }
     }
     if (!cookies) {
-      return { ok: false, error: closed ? '로그인하지 않고 창을 닫았습니다.' : '로그인 대기 시간이 지났습니다.' };
+      return { ok: false, error: '로그인하지 않은 채로 창이 닫혔습니다.' };
     }
     return { ok: true, cookies };
   } finally {
-    // 로그인 감지 후에도 프로필은 남는다(다음 로그인 때 히스토리가 이어지도록).
+    // 프로필 폴더는 그대로 둔다(쿠키·히스토리가 이어져야 자연스러움).
     try {
       await ctx?.close();
     } catch {

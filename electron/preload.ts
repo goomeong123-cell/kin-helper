@@ -29,6 +29,7 @@ const api = {
       ipcRenderer.invoke('accounts:update', id, fields),
     remove: (id: number) => ipcRenderer.invoke('accounts:remove', id),
     login: (id: number) => ipcRenderer.invoke('accounts:login', id),
+    openBrowser: (id: number) => ipcRenderer.invoke('accounts:openBrowser', id),
   },
   questions: {
     collect: (opts: { brandId?: number; accountId?: number; limit?: number }) =>

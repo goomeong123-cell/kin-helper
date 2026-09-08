@@ -106,13 +106,16 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
     await window.api.accounts.remove(account.id);
     onChange();
   }
-  async function login() {
-    // 진짜 Chrome 창이 뜨고, 사람이 로그인할 때까지 기다린다(최대 10분).
+  // 진짜 Chrome 창을 연다. 로그인하든 그냥 둘러보든, 창을 닫으면 세션이 저장된다.
+  async function openChrome(mode: 'login' | 'browse') {
     setLoggingIn(true);
     try {
-      const res = await window.api.accounts.login(account.id);
-      if (!res.ok) toast(res.error || '로그인 실패');
-      else toast('로그인 완료 — 세션이 앱에 적용됐습니다');
+      const res =
+        mode === 'login'
+          ? await window.api.accounts.login(account.id)
+          : await window.api.accounts.openBrowser(account.id);
+      if (!res.ok) toast(res.error || '브라우저 열기 실패');
+      else toast('브라우저를 닫았습니다 — 세션 저장됨');
     } finally {
       setLoggingIn(false);
     }
@@ -145,11 +148,19 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
           <div style={{ display: 'flex', gap: 8 }}>
             <button
               className="btn sm primary"
-              onClick={login}
+              onClick={() => openChrome('login')}
               disabled={!hasProxy || loggingIn}
-              title={hasProxy ? '실제 Chrome 창이 열립니다. 로그인하면 자동으로 감지합니다' : '프록시를 먼저 등록해야 로그인할 수 있습니다'}
+              title={hasProxy ? '실제 Chrome이 열립니다. 로그인하면 자동 감지하고, 창은 계속 쓰다가 닫으면 됩니다' : '프록시를 먼저 등록해야 로그인할 수 있습니다'}
             >
-              {loggingIn ? '로그인 대기 중…' : '로그인 (실제 Chrome)'}
+              {loggingIn ? '브라우저 사용 중…' : '로그인 (실제 Chrome)'}
+            </button>
+            <button
+              className="btn sm"
+              onClick={() => openChrome('browse')}
+              disabled={!hasProxy || loggingIn}
+              title="이 계정의 Chrome을 그냥 엽니다 (프로필 설정·둘러보기·워밍업용)"
+            >
+              브라우저 열기
             </button>
             <button className="btn sm" onClick={() => setEdit(true)}>
               {hasProxy ? '수정' : '프록시 등록'}

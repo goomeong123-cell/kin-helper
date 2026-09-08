@@ -205,13 +205,52 @@ export function registerIpc(ipcMain: IpcMain) {
     // 로그인은 '진짜 Chrome'(Playwright)으로 한다.
     // Electron 창은 크롬 흉내라 로그인 시점에 봇으로 탐지되기 쉬움 → 로그인만 실물 크롬 사용.
     const accP = accountToProxy(a);
-    const res = await loginWithRealChrome(accP, (s) => pushLog('[로그인] ' + s));
+    // 로그인이 확인되는 즉시 앱 세션에 반영한다(창은 계속 열려 있어도 됨).
+    let applied = 0;
+    const res = await loginWithRealChrome(
+      accP,
+      (s) => pushLog('[' + a.naver_id + '] ' + s),
+      async (cookies) => {
+        applied = await importCookiesToAccountSession(accP, cookies);
+        pushLog(`[${a.naver_id}] 세션 적용됨 (쿠키 ${applied}개) — 창은 편하게 쓰다가 닫으세요`);
+      },
+    );
     if (!res.ok || !res.cookies) {
       return { ok: false, error: res.error || '로그인에 실패했습니다.' };
     }
-    // 진짜 크롬에서 받은 세션을 앱 세션으로 옮겨, 수집·답변이 그대로 동작하게 한다.
+    // 창을 닫을 때 최신 쿠키로 한 번 더 갱신 (로그인 후 더 둘러본 내용까지 반영)
     const n = await importCookiesToAccountSession(accP, res.cookies);
-    pushLog(`[로그인] 완료 — 세션 쿠키 ${n}개 적용`);
+    pushLog(`[${a.naver_id}] 브라우저 종료 — 세션 저장 완료 (쿠키 ${n}개)`);
+    return { ok: true };
+  });
+
+  // 계정 전용 크롬을 그냥 열어보기 (프로필 설정·둘러보기·워밍업용).
+  // 로그인 여부와 상관없이 열리고, 창을 닫으면 그때 세션이 저장된다.
+  ipcMain.handle('accounts:openBrowser', async (_e, id: number) => {
+    const a = db().prepare('SELECT * FROM accounts WHERE id = ?').get([id]) as any;
+    if (!a) return { ok: false, error: '계정을 찾을 수 없습니다.' };
+    if (!a.proxy_host || !a.proxy_port) {
+      return {
+        ok: false,
+        error: '프록시가 없어 브라우저를 열지 않았습니다. 실제 IP 노출을 막기 위해 먼저 프록시를 등록하세요.',
+      };
+    }
+    const accP = accountToProxy(a);
+    const res = await loginWithRealChrome(
+      accP,
+      (s) => pushLog('[' + a.naver_id + '] ' + s),
+      async (cookies) => {
+        const k = await importCookiesToAccountSession(accP, cookies);
+        pushLog(`[${a.naver_id}] 세션 적용됨 (쿠키 ${k}개)`);
+      },
+    );
+    // 로그인 안 하고 그냥 둘러보다 닫아도 정상 종료로 본다
+    if (res.ok && res.cookies) {
+      const n = await importCookiesToAccountSession(accP, res.cookies);
+      pushLog(`[${a.naver_id}] 브라우저 종료 — 세션 저장 완료 (쿠키 ${n}개)`);
+    } else {
+      pushLog(`[${a.naver_id}] 브라우저 종료`);
+    }
     return { ok: true };
   });
 
