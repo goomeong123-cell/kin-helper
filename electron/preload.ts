@@ -30,6 +30,7 @@ const api = {
     remove: (id: number) => ipcRenderer.invoke('accounts:remove', id),
     login: (id: number) => ipcRenderer.invoke('accounts:login', id),
     openBrowser: (id: number) => ipcRenderer.invoke('accounts:openBrowser', id),
+    checkProxyIp: (id: number) => ipcRenderer.invoke('accounts:checkProxyIp', id),
   },
   questions: {
     collect: (opts: { brandId?: number; accountId?: number; limit?: number }) =>

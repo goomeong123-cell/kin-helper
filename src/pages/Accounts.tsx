@@ -84,6 +84,8 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
   const toast = useToast();
   const [edit, setEdit] = useState(false);
   const [loggingIn, setLoggingIn] = useState(false);
+  const [ipInfo, setIpInfo] = useState<{ stable: boolean; distinct: string[] } | null>(null);
+  const [checkingIp, setCheckingIp] = useState(false);
   const [f, setF] = useState({
     naver_id: account.naver_id,
     memo: account.memo || '',
@@ -106,6 +108,24 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
     await window.api.accounts.remove(account.id);
     onChange();
   }
+  // 프록시로 실제 나가는 IP가 고정인지 확인.
+  // IP가 바뀌면 네이버가 세션을 끊고 계정을 잠근다("클릭하니 로그아웃"의 대표 원인).
+  async function checkIp() {
+    setCheckingIp(true);
+    setIpInfo(null);
+    try {
+      const r = await window.api.accounts.checkProxyIp(account.id);
+      if (!r.ok) {
+        toast(r.error || 'IP 확인 실패');
+        return;
+      }
+      setIpInfo({ stable: !!r.stable, distinct: r.distinct || [] });
+      toast(r.stable ? `프록시 IP 고정 확인 ✓ ${r.distinct?.[0]}` : `⚠ IP가 바뀝니다 (${r.distinct?.length}개)`);
+    } finally {
+      setCheckingIp(false);
+    }
+  }
+
   // 진짜 Chrome 창을 연다. 로그인하든 그냥 둘러보든, 창을 닫으면 세션이 저장된다.
   async function openChrome(mode: 'login' | 'browse') {
     setLoggingIn(true);
@@ -144,6 +164,29 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
               )}
               {' · '}일일 한도 {account.daily_limit}건{account.memo ? ` · ${account.memo}` : ''}
             </div>
+            {ipInfo && (
+              <div
+                style={{
+                  fontSize: 12.5,
+                  lineHeight: 1.5,
+                  color: ipInfo.stable ? 'var(--text-sub)' : 'var(--red, #e5484d)',
+                  background: ipInfo.stable ? 'var(--bg-soft)' : 'rgba(229,72,77,0.07)',
+                  border: `1px solid ${ipInfo.stable ? 'var(--border)' : 'rgba(229,72,77,0.18)'}`,
+                  borderRadius: 8,
+                  padding: '6px 10px',
+                }}
+              >
+                {ipInfo.stable ? (
+                  <>출구 IP 고정 ✓ <b>{ipInfo.distinct[0]}</b> — 세션 끊김 원인 아님</>
+                ) : (
+                  <>
+                    ⚠ 출구 IP가 <b>{ipInfo.distinct.length}개</b>로 바뀝니다 ({ipInfo.distinct.join(', ')})
+                    <br />
+                    네이버가 세션 탈취로 보고 로그인을 끊습니다. <b>고정 IP 프록시로 교체해야 합니다.</b>
+                  </>
+                )}
+              </div>
+            )}
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
             <button
@@ -153,6 +196,14 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
               title={hasProxy ? '실제 Chrome이 열립니다. 로그인하면 자동 감지하고, 창은 계속 쓰다가 닫으면 됩니다' : '프록시를 먼저 등록해야 로그인할 수 있습니다'}
             >
               {loggingIn ? '브라우저 사용 중…' : '로그인 (실제 Chrome)'}
+            </button>
+            <button
+              className="btn sm"
+              onClick={checkIp}
+              disabled={!hasProxy || checkingIp}
+              title="프록시로 나가는 IP가 고정인지 확인합니다. IP가 바뀌면 네이버가 로그인을 끊습니다"
+            >
+              {checkingIp ? 'IP 확인 중…' : '프록시 IP 확인'}
             </button>
             <button
               className="btn sm"

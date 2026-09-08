@@ -200,3 +200,71 @@ export async function loginWithRealChrome(
     }
   }
 }
+
+export interface ProxyIpCheck {
+  ok: boolean;
+  ips: string[];
+  distinct: string[];
+  stable: boolean;
+  error?: string;
+}
+
+/**
+ * 이 계정의 프록시로 실제로 나가는 IP를 여러 번 확인한다.
+ * 한 세션 안에서 IP가 바뀌면 네이버가 세션을 무효화하고 계정을 잠근다
+ * ("로그인은 됐는데 클릭 한 번에 로그아웃" 증상의 대표 원인).
+ */
+export async function checkProxyExitIp(acc: AccountProxy, times = 6): Promise<ProxyIpCheck> {
+  if (!acc.proxyHost || !acc.proxyPort) {
+    return { ok: false, ips: [], distinct: [], stable: false, error: '프록시가 등록되지 않았습니다.' };
+  }
+  let request: typeof import('playwright').request;
+  try {
+    ({ request } = await import('playwright'));
+  } catch (e) {
+    return { ok: false, ips: [], distinct: [], stable: false, error: 'playwright 로드 실패' };
+  }
+  const ips: string[] = [];
+  let ctx: import('playwright').APIRequestContext | null = null;
+  try {
+    ctx = await request.newContext({
+      proxy: {
+        server: `http://${acc.proxyHost}:${acc.proxyPort}`,
+        username: acc.proxyUser || undefined,
+        password: acc.proxyPass || undefined,
+      },
+      ignoreHTTPSErrors: true,
+      timeout: 15000,
+    });
+    for (let i = 0; i < times; i++) {
+      let ip = '';
+      try {
+        const r = await ctx.get('https://api.ipify.org?format=json', { timeout: 15000 });
+        if (r.ok()) {
+          const j = (await r.json()) as { ip?: string };
+          ip = String(j.ip || '').trim();
+        }
+      } catch {
+        // 한 번 실패는 다음 시도로
+      }
+      if (ip) ips.push(ip);
+      if (i < times - 1) await new Promise((r) => setTimeout(r, 2500));
+    }
+  } catch (e) {
+    return {
+      ok: false, ips, distinct: Array.from(new Set(ips)), stable: false,
+      error: '프록시 연결 실패: ' + (e instanceof Error ? e.message : String(e)).slice(0, 160),
+    };
+  } finally {
+    try {
+      await ctx?.dispose();
+    } catch {
+      /* ignore */
+    }
+  }
+  const distinct = Array.from(new Set(ips));
+  if (!ips.length) {
+    return { ok: false, ips, distinct, stable: false, error: '프록시로 외부 접속이 되지 않습니다(IP 확인 실패).' };
+  }
+  return { ok: true, ips, distinct, stable: distinct.length === 1 };
+}

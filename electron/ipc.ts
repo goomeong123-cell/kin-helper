@@ -22,7 +22,7 @@ import {
   type AccountProxy,
   type PostMode,
 } from './naver';
-import { loginWithRealChrome } from './pwlogin';
+import { loginWithRealChrome, checkProxyExitIp } from './pwlogin';
 
 const DEFAULT_DAILY_PROMPT =
   '당신은 특정 분야에 경험이 있는 평범한 사람입니다. 네이버 지식인에서 질문에 답합니다. ' +
@@ -245,6 +245,22 @@ export function registerIpc(ipcMain: IpcMain) {
     const n = await importCookiesToAccountSession(accP, res.cookies);
     pushLog(`[${a.naver_id}] 브라우저 종료 — 세션 저장 완료 (쿠키 ${n}개)`);
     return { ok: true };
+  });
+
+  // 프록시로 실제 나가는 IP가 고정인지 확인 (로그인 세션이 끊기는 대표 원인 진단)
+  ipcMain.handle('accounts:checkProxyIp', async (_e, id: number) => {
+    const a = db().prepare('SELECT * FROM accounts WHERE id = ?').get([id]) as any;
+    if (!a) return { ok: false, error: '계정을 찾을 수 없습니다.' };
+    pushLog(`[${a.naver_id}] 프록시 IP 확인 중… (약 15초)`);
+    const r = await checkProxyExitIp(accountToProxy(a), 6);
+    if (!r.ok) {
+      pushLog(`[${a.naver_id}] 프록시 IP 확인 실패: ${r.error || ''}`);
+      return { ok: false, error: r.error };
+    }
+    pushLog(
+      `[${a.naver_id}] 프록시 IP ${r.stable ? '고정 ✓ ' + r.distinct[0] : '⚠ 변동함: ' + r.distinct.join(', ')}`,
+    );
+    return { ok: true, ips: r.ips, distinct: r.distinct, stable: r.stable };
   });
 
   // 계정 전용 크롬을 그냥 열어보기 (프로필 설정·둘러보기·워밍업용).
