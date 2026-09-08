@@ -60,6 +60,29 @@ function titleExcluded(title: string, terms: string[]): boolean {
   return terms.some((t) => hay.includes(t.toLowerCase()));
 }
 
+/**
+ * 모든 계정 세션의 네이버 로그인 쿠키를 디스크에 영구화한다.
+ * 네이버는 사용 중 NID_SES를 '만료 없는 세션 쿠키'로 계속 새로 발급하는데,
+ * 그 상태로 앱이 종료(=업데이트 설치)되면 사라져서 다음 실행 때 로그아웃으로 보인다.
+ * → 주기적으로, 그리고 업데이트 설치 직전에 호출해 만료일을 붙여 저장한다.
+ */
+export async function persistAllAccountSessions(): Promise<number> {
+  let n = 0;
+  try {
+    const rows = getDb().prepare('SELECT * FROM accounts').all() as any[];
+    for (const a of rows) {
+      try {
+        n += await persistAccountLogin(accountToProxy(a));
+      } catch {
+        // 계정 하나 실패해도 나머지는 계속
+      }
+    }
+  } catch {
+    // DB 미초기화 등 — 무시
+  }
+  return n;
+}
+
 export function registerIpc(ipcMain: IpcMain) {
   const db = () => getDb();
 
