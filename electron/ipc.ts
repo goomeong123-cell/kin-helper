@@ -14,6 +14,7 @@ import {
   autoIsLoggedIn,
   autoGoToKinAnswerList,
   autoScrapeWaitingList,
+  importCookiesToAccountSession,
   getLastScanCount,
   autoScrapeCurrentPage,
   autoAdvancePage,
@@ -21,6 +22,7 @@ import {
   type AccountProxy,
   type PostMode,
 } from './naver';
+import { loginWithRealChrome } from './pwlogin';
 
 const DEFAULT_DAILY_PROMPT =
   '당신은 특정 분야에 경험이 있는 평범한 사람입니다. 네이버 지식인에서 질문에 답합니다. ' +
@@ -200,7 +202,16 @@ export function registerIpc(ipcMain: IpcMain) {
         error: '프록시가 없어 로그인 창을 열지 않았습니다. 실제 IP 노출을 막기 위해 먼저 프록시를 등록하세요.',
       };
     }
-    await openLoginWindow(accountToProxy(a));
+    // 로그인은 '진짜 Chrome'(Playwright)으로 한다.
+    // Electron 창은 크롬 흉내라 로그인 시점에 봇으로 탐지되기 쉬움 → 로그인만 실물 크롬 사용.
+    const accP = accountToProxy(a);
+    const res = await loginWithRealChrome(accP, (s) => pushLog('[로그인] ' + s));
+    if (!res.ok || !res.cookies) {
+      return { ok: false, error: res.error || '로그인에 실패했습니다.' };
+    }
+    // 진짜 크롬에서 받은 세션을 앱 세션으로 옮겨, 수집·답변이 그대로 동작하게 한다.
+    const n = await importCookiesToAccountSession(accP, res.cookies);
+    pushLog(`[로그인] 완료 — 세션 쿠키 ${n}개 적용`);
     return { ok: true };
   });
 

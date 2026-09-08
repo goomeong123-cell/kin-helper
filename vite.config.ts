@@ -21,7 +21,7 @@ export default defineConfig({
           build: {
             outDir: 'dist-electron',
             rollupOptions: {
-              external: ['node-sqlite3-wasm', 'electron', 'electron-updater'],
+              external: ['node-sqlite3-wasm', 'electron', 'electron-updater', 'playwright', 'playwright-core'],
             },
           },
         },

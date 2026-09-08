@@ -112,12 +112,13 @@ const STEALTH_JS = `
     }
     defineOnNavigator('languages', function () { return ['ko-KR', 'ko']; });
 
-    // window.chrome: 진짜 크롬은 app/csi/loadTimes/runtime을 갖는다.
-    // runtime 하나만 있는 상태는 봇 탐지가 바로 잡아내므로 형태를 맞춘다.
+    // window.chrome: 진짜 크롬은 일반 페이지에서 app/csi/loadTimes 를 갖는다(runtime 없음).
     try {
       if (!window.chrome) window.chrome = {};
       var ch = window.chrome;
-      if (!ch.runtime) ch.runtime = {};
+      // 실측 확인: 진짜 크롬의 window.chrome 은 일반 사이트에서 [loadTimes, csi, app] 뿐이고
+      // runtime 은 없다. 예전엔 runtime={} 을 넣었는데 그게 오히려 실제 크롬과 달랐다.
+      try { if (ch.runtime && !Object.keys(ch.runtime).length) delete ch.runtime; } catch (e) {}
       if (typeof ch.loadTimes !== 'function') {
         ch.loadTimes = mask(function loadTimes() {
           var t = (performance && performance.timing) ? performance.timing : {};
@@ -1666,4 +1667,50 @@ export async function autoOpenAndAnswer(
   } catch (e: unknown) {
     return { typed: false, submitted: false, error: e instanceof Error ? e.message : String(e) };
   }
+}
+
+/**
+ * 진짜 Chrome에서 받아온 네이버 쿠키를 이 계정의 앱 세션에 심는다.
+ * (로그인은 진짜 크롬으로 하고, 수집·답변은 기존 앱 세션이 그대로 쓰도록 이어주는 다리)
+ */
+export async function importCookiesToAccountSession(
+  acc: AccountProxy,
+  cookies: Array<{
+    name: string; value: string; domain: string; path: string;
+    expires: number; httpOnly: boolean; secure: boolean; sameSite?: string;
+  }>,
+): Promise<number> {
+  const ses = await getAccountSession(acc);
+  let n = 0;
+  const thirtyDays = Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 30;
+  for (const c of cookies) {
+    const host = (c.domain || '').replace(/^\./, '');
+    if (!host) continue;
+    // 세션 쿠키(expires<=0)는 앱 재시작 시 사라지므로 인증 쿠키만 30일로 붙여준다
+    const isAuth = c.name === 'NID_AUT' || c.name === 'NID_SES' || c.name === 'NID_JKL';
+    const exp = c.expires && c.expires > 0 ? c.expires : isAuth ? thirtyDays : undefined;
+    const ss = c.sameSite === 'Lax' ? 'lax' : c.sameSite === 'Strict' ? 'strict' : c.sameSite === 'None' ? 'no_restriction' : undefined;
+    try {
+      await ses.cookies.set({
+        url: `https://${host}${c.path && c.path.startsWith('/') ? c.path : '/'}`,
+        name: c.name,
+        value: c.value,
+        domain: c.domain,
+        path: c.path || '/',
+        secure: c.secure,
+        httpOnly: c.httpOnly,
+        ...(exp ? { expirationDate: exp } : {}),
+        ...(ss ? { sameSite: ss as 'lax' | 'strict' | 'no_restriction' } : {}),
+      });
+      n++;
+    } catch {
+      // 개별 쿠키 실패는 무시 (일부는 도메인 규칙상 못 심을 수 있음)
+    }
+  }
+  try {
+    await ses.cookies.flushStore();
+  } catch {
+    // ignore
+  }
+  return n;
 }

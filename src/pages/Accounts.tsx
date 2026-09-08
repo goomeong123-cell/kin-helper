@@ -83,6 +83,7 @@ export default function Accounts() {
 function AccountCard({ account, onChange }: { account: Account; onChange: () => void }) {
   const toast = useToast();
   const [edit, setEdit] = useState(false);
+  const [loggingIn, setLoggingIn] = useState(false);
   const [f, setF] = useState({
     naver_id: account.naver_id,
     memo: account.memo || '',
@@ -106,8 +107,15 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
     onChange();
   }
   async function login() {
-    const res = await window.api.accounts.login(account.id);
-    if (!res.ok) toast(res.error || '로그인 창 열기 실패');
+    // 진짜 Chrome 창이 뜨고, 사람이 로그인할 때까지 기다린다(최대 10분).
+    setLoggingIn(true);
+    try {
+      const res = await window.api.accounts.login(account.id);
+      if (!res.ok) toast(res.error || '로그인 실패');
+      else toast('로그인 완료 — 세션이 앱에 적용됐습니다');
+    } finally {
+      setLoggingIn(false);
+    }
   }
 
   const hasProxy = !!(account.proxy_host && account.proxy_port);
@@ -138,10 +146,10 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
             <button
               className="btn sm primary"
               onClick={login}
-              disabled={!hasProxy}
-              title={hasProxy ? '' : '프록시를 먼저 등록해야 로그인할 수 있습니다'}
+              disabled={!hasProxy || loggingIn}
+              title={hasProxy ? '실제 Chrome 창이 열립니다. 로그인하면 자동으로 감지합니다' : '프록시를 먼저 등록해야 로그인할 수 있습니다'}
             >
-              로그인 창
+              {loggingIn ? '로그인 대기 중…' : '로그인 (실제 Chrome)'}
             </button>
             <button className="btn sm" onClick={() => setEdit(true)}>
               {hasProxy ? '수정' : '프록시 등록'}

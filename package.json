@@ -1,7 +1,7 @@
 {
   "name": "kin-helper",
   "private": true,
-  "version": "0.5.27",
+  "version": "0.6.0",
   "description": "네이버 지식인 도움 답변 + 자연스러운 제품 노출 도구",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -14,6 +14,7 @@
   "dependencies": {
     "electron-updater": "^6.8.9",
     "node-sqlite3-wasm": "^0.8.31",
+    "playwright": "^1.63.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
@@ -70,6 +71,11 @@
         "from": "node_modules/node-sqlite3-wasm/dist",
         "to": "node-sqlite3-wasm/dist"
       }
+    ],
+    "asarUnpack": [
+      "node_modules/playwright/**/*",
+      "node_modules/playwright-core/**/*",
+      "node_modules/node-sqlite3-wasm/**/*"
     ]
   }
 }
