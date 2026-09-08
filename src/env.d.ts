@@ -81,7 +81,7 @@ export interface Api {
     remove: (id: number) => Promise<boolean>;
     login: (id: number) => Promise<{ ok: boolean; error?: string }>;
     openBrowser: (id: number) => Promise<{ ok: boolean; error?: string }>;
-    checkProxyIp: (id: number) => Promise<{ ok: boolean; ips?: string[]; distinct?: string[]; stable?: boolean; anonymous?: boolean; leakHeaders?: Array<{ name: string; value: string }>; error?: string }>;
+    checkProxyIp: (id: number) => Promise<{ ok: boolean; ips?: string[]; distinct?: string[]; stable?: boolean; anonymous?: boolean; leakHeaders?: Array<{ name: string; value: string }>; clockSkewSec?: number | null; error?: string }>;
   };
   questions: {
     collect: (opts: { brandId?: number; accountId?: number; limit?: number }) => Promise<{ ok: boolean; inserted: number; keywords?: string[]; excluded?: number; scanned?: number; target?: number; brands?: number; error?: string }>;

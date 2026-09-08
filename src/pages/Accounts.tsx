@@ -89,6 +89,7 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
     distinct: string[];
     anonymous?: boolean;
     leakHeaders?: Array<{ name: string; value: string }>;
+    clockSkewSec?: number | null;
   } | null>(null);
   const [checkingIp, setCheckingIp] = useState(false);
   const [f, setF] = useState({
@@ -129,6 +130,7 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
         distinct: r.distinct || [],
         anonymous: r.anonymous,
         leakHeaders: r.leakHeaders,
+        clockSkewSec: r.clockSkewSec,
       });
       if (r.anonymous === false) toast('⚠ 프록시가 흔적 헤더를 붙입니다 — 네이버가 프록시를 알아챕니다');
       else toast(r.stable ? `프록시 정상 ✓ ${r.distinct?.[0]}` : `⚠ IP가 바뀝니다 (${r.distinct?.length}개)`);
@@ -201,7 +203,22 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
                     )}
                   </>
                 ) : ipInfo.stable ? (
-                  <>출구 IP 고정 ✓ <b>{ipInfo.distinct[0]}</b>{ipInfo.anonymous ? ' · 익명성 정상 ✓' : ''} — 세션 끊김 원인 아님</>
+                  <>
+                    출구 IP 고정 ✓ <b>{ipInfo.distinct[0]}</b>
+                    {ipInfo.anonymous ? ' · 익명성 정상 ✓' : ''}
+                    {typeof ipInfo.clockSkewSec === 'number' &&
+                      (Math.abs(ipInfo.clockSkewSec) > 60 ? (
+                        <>
+                          <br />
+                          <span style={{ color: 'var(--red, #e5484d)' }}>
+                            ⚠ VM 시계가 <b>{ipInfo.clockSkewSec}초</b> 어긋남 — 세션이 끊길 수 있습니다.
+                            Windows 시간 동기화를 켜주세요.
+                          </span>
+                        </>
+                      ) : (
+                        ' · 시계 정상 ✓'
+                      ))}
+                  </>
                 ) : (
                   <>
                     ⚠ 출구 IP가 <b>{ipInfo.distinct.length}개</b>로 바뀝니다 ({ipInfo.distinct.join(', ')})

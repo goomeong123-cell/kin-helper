@@ -267,9 +267,12 @@ export function registerIpc(ipcMain: IpcMain) {
     } else if (r.anonymous === true) {
       pushLog(`[${a.naver_id}] 프록시 익명성 정상 ✓ (흔적 헤더 없음)`);
     }
+    if (typeof r.clockSkewSec === 'number' && Math.abs(r.clockSkewSec) > 60) {
+      pushLog(`[${a.naver_id}] ⚠ VM 시계가 실제보다 ${r.clockSkewSec}초 어긋남 — 세션 끊김 원인이 될 수 있음`);
+    }
     return {
       ok: true, ips: r.ips, distinct: r.distinct, stable: r.stable,
-      anonymous: r.anonymous, leakHeaders: r.leakHeaders,
+      anonymous: r.anonymous, leakHeaders: r.leakHeaders, clockSkewSec: r.clockSkewSec,
     };
   });
 

@@ -100,7 +100,15 @@ export async function loginWithRealChrome(
       locale: 'ko-KR',
       timezoneId: 'Asia/Seoul',
       viewport: null, // 실제 창 크기 그대로 (자연스러운 지문)
-      args: ['--no-default-browser-check', '--no-first-run', '--window-size=1280,900'],
+      args: [
+        '--no-default-browser-check',
+        '--no-first-run',
+        '--window-size=1280,900',
+        // WebRTC는 프록시를 타지 않고 UDP로 직접 나가서 진짜 IP를 흘릴 수 있다 → 프록시만 쓰게 강제
+        '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
+        // QUIC(UDP)도 HTTP 프록시를 우회할 수 있으므로 끄고 TCP만 사용
+        '--disable-quic',
+      ],
       // Playwright가 기본으로 붙이는 자동화 표식 제거
       ignoreDefaultArgs: [
         '--enable-automation',
@@ -201,6 +209,29 @@ export async function loginWithRealChrome(
   }
 }
 
+/** VM 시계가 실제 시각과 얼마나 어긋나는지(초). 몇 분만 틀려도 세션 토큰이 무효가 된다. */
+export async function checkClockSkewSec(): Promise<number | null> {
+  try {
+    const { request } = await import('playwright');
+    const ctx = await request.newContext({ ignoreHTTPSErrors: true, timeout: 12000 });
+    try {
+      const t0 = Date.now();
+      const r = await ctx.get('https://www.naver.com/', { timeout: 12000 });
+      const t1 = Date.now();
+      const dateHeader = r.headers()['date'];
+      if (!dateHeader) return null;
+      const server = new Date(dateHeader).getTime();
+      if (!Number.isFinite(server)) return null;
+      const local = (t0 + t1) / 2; // 왕복 시간 보정
+      return Math.round((local - server) / 1000);
+    } finally {
+      await ctx.dispose().catch(() => {});
+    }
+  } catch {
+    return null;
+  }
+}
+
 export interface ProxyIpCheck {
   ok: boolean;
   ips: string[];
@@ -209,6 +240,8 @@ export interface ProxyIpCheck {
   /** 프록시가 스스로를 드러내는 헤더를 붙였는지 (붙으면 네이버가 프록시 사용을 바로 알아챔) */
   leakHeaders?: Array<{ name: string; value: string }>;
   anonymous?: boolean;
+  /** VM 시계 오차(초). |값|이 크면 세션이 끊긴다. */
+  clockSkewSec?: number | null;
   error?: string;
 }
 
@@ -310,5 +343,7 @@ export async function checkProxyExitIp(acc: AccountProxy, times = 6): Promise<Pr
     // 헤더 검사 실패는 치명적이지 않음 (anonymous 는 undefined 로 남음)
   }
 
-  return { ok: true, ips, distinct, stable: distinct.length === 1, leakHeaders, anonymous };
+  const clockSkewSec = await checkClockSkewSec();
+
+  return { ok: true, ips, distinct, stable: distinct.length === 1, leakHeaders, anonymous, clockSkewSec };
 }
