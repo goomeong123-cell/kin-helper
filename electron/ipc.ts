@@ -260,7 +260,17 @@ export function registerIpc(ipcMain: IpcMain) {
     pushLog(
       `[${a.naver_id}] 프록시 IP ${r.stable ? '고정 ✓ ' + r.distinct[0] : '⚠ 변동함: ' + r.distinct.join(', ')}`,
     );
-    return { ok: true, ips: r.ips, distinct: r.distinct, stable: r.stable };
+    if (r.anonymous === false) {
+      pushLog(
+        `[${a.naver_id}] ⚠ 프록시가 흔적 헤더를 붙임: ${(r.leakHeaders || []).map((h) => h.name).join(', ')}`,
+      );
+    } else if (r.anonymous === true) {
+      pushLog(`[${a.naver_id}] 프록시 익명성 정상 ✓ (흔적 헤더 없음)`);
+    }
+    return {
+      ok: true, ips: r.ips, distinct: r.distinct, stable: r.stable,
+      anonymous: r.anonymous, leakHeaders: r.leakHeaders,
+    };
   });
 
   // 계정 전용 크롬을 그냥 열어보기 (프로필 설정·둘러보기·워밍업용).

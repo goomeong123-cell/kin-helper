@@ -206,8 +206,17 @@ export interface ProxyIpCheck {
   ips: string[];
   distinct: string[];
   stable: boolean;
+  /** 프록시가 스스로를 드러내는 헤더를 붙였는지 (붙으면 네이버가 프록시 사용을 바로 알아챔) */
+  leakHeaders?: Array<{ name: string; value: string }>;
+  anonymous?: boolean;
   error?: string;
 }
+
+// 프록시 사용을 드러내는 대표 헤더들 (하나라도 붙으면 익명성 실패)
+const PROXY_REVEALING = [
+  'via', 'x-forwarded-for', 'forwarded', 'x-real-ip', 'client-ip',
+  'proxy-connection', 'x-proxy-id', 'x-forwarded-host', 'x-forwarded-server',
+];
 
 /**
  * 이 계정의 프록시로 실제로 나가는 IP를 여러 번 확인한다.
@@ -266,5 +275,40 @@ export async function checkProxyExitIp(acc: AccountProxy, times = 6): Promise<Pr
   if (!ips.length) {
     return { ok: false, ips, distinct, stable: false, error: '프록시로 외부 접속이 되지 않습니다(IP 확인 실패).' };
   }
-  return { ok: true, ips, distinct, stable: distinct.length === 1 };
+
+  // 프록시가 요청에 자기 흔적을 붙이는지 확인한다.
+  // Via / X-Forwarded-For 같은 헤더가 붙으면 IP가 아무리 고정이어도
+  // 네이버는 "프록시로 접속했다"를 즉시 알 수 있다.
+  const leakHeaders: Array<{ name: string; value: string }> = [];
+  let anonymous: boolean | undefined;
+  try {
+    const ctx2 = await request.newContext({
+      proxy: {
+        server: `http://${acc.proxyHost}:${acc.proxyPort}`,
+        username: acc.proxyUser || undefined,
+        password: acc.proxyPass || undefined,
+      },
+      ignoreHTTPSErrors: true,
+      timeout: 15000,
+    });
+    try {
+      const r = await ctx2.get('https://httpbin.org/headers', { timeout: 15000 });
+      if (r.ok()) {
+        const j = (await r.json()) as { headers?: Record<string, string> };
+        const hs = j.headers || {};
+        for (const k of Object.keys(hs)) {
+          if (PROXY_REVEALING.includes(k.toLowerCase())) {
+            leakHeaders.push({ name: k, value: String(hs[k]).slice(0, 120) });
+          }
+        }
+        anonymous = leakHeaders.length === 0;
+      }
+    } finally {
+      await ctx2.dispose().catch(() => {});
+    }
+  } catch {
+    // 헤더 검사 실패는 치명적이지 않음 (anonymous 는 undefined 로 남음)
+  }
+
+  return { ok: true, ips, distinct, stable: distinct.length === 1, leakHeaders, anonymous };
 }

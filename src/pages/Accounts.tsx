@@ -84,7 +84,12 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
   const toast = useToast();
   const [edit, setEdit] = useState(false);
   const [loggingIn, setLoggingIn] = useState(false);
-  const [ipInfo, setIpInfo] = useState<{ stable: boolean; distinct: string[] } | null>(null);
+  const [ipInfo, setIpInfo] = useState<{
+    stable: boolean;
+    distinct: string[];
+    anonymous?: boolean;
+    leakHeaders?: Array<{ name: string; value: string }>;
+  } | null>(null);
   const [checkingIp, setCheckingIp] = useState(false);
   const [f, setF] = useState({
     naver_id: account.naver_id,
@@ -119,8 +124,14 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
         toast(r.error || 'IP 확인 실패');
         return;
       }
-      setIpInfo({ stable: !!r.stable, distinct: r.distinct || [] });
-      toast(r.stable ? `프록시 IP 고정 확인 ✓ ${r.distinct?.[0]}` : `⚠ IP가 바뀝니다 (${r.distinct?.length}개)`);
+      setIpInfo({
+        stable: !!r.stable,
+        distinct: r.distinct || [],
+        anonymous: r.anonymous,
+        leakHeaders: r.leakHeaders,
+      });
+      if (r.anonymous === false) toast('⚠ 프록시가 흔적 헤더를 붙입니다 — 네이버가 프록시를 알아챕니다');
+      else toast(r.stable ? `프록시 정상 ✓ ${r.distinct?.[0]}` : `⚠ IP가 바뀝니다 (${r.distinct?.length}개)`);
     } finally {
       setCheckingIp(false);
     }
@@ -169,15 +180,28 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
                 style={{
                   fontSize: 12.5,
                   lineHeight: 1.5,
-                  color: ipInfo.stable ? 'var(--text-sub)' : 'var(--red, #e5484d)',
-                  background: ipInfo.stable ? 'var(--bg-soft)' : 'rgba(229,72,77,0.07)',
-                  border: `1px solid ${ipInfo.stable ? 'var(--border)' : 'rgba(229,72,77,0.18)'}`,
+                  color: ipInfo.stable && ipInfo.anonymous !== false ? 'var(--text-sub)' : 'var(--red, #e5484d)',
+                  background: ipInfo.stable && ipInfo.anonymous !== false ? 'var(--bg-soft)' : 'rgba(229,72,77,0.07)',
+                  border: `1px solid ${ipInfo.stable && ipInfo.anonymous !== false ? 'var(--border)' : 'rgba(229,72,77,0.18)'}`,
                   borderRadius: 8,
                   padding: '6px 10px',
                 }}
               >
-                {ipInfo.stable ? (
-                  <>출구 IP 고정 ✓ <b>{ipInfo.distinct[0]}</b> — 세션 끊김 원인 아님</>
+                {ipInfo.anonymous === false ? (
+                  <>
+                    ⚠ 이 프록시는 <b>자기 흔적 헤더</b>를 붙입니다 (
+                    {(ipInfo.leakHeaders || []).map((h) => h.name).join(', ')})
+                    <br />
+                    IP가 고정이어도 네이버는 <b>프록시 접속임을 바로 알아챕니다.</b> 익명(elite) 프록시로 교체하세요.
+                    {(ipInfo.leakHeaders || []).some((h) => /forwarded-for|real-ip|client-ip/i.test(h.name)) && (
+                      <>
+                        <br />
+                        특히 이 헤더엔 <b>내 실제 IP가 담겨</b> 전달됩니다.
+                      </>
+                    )}
+                  </>
+                ) : ipInfo.stable ? (
+                  <>출구 IP 고정 ✓ <b>{ipInfo.distinct[0]}</b>{ipInfo.anonymous ? ' · 익명성 정상 ✓' : ''} — 세션 끊김 원인 아님</>
                 ) : (
                   <>
                     ⚠ 출구 IP가 <b>{ipInfo.distinct.length}개</b>로 바뀝니다 ({ipInfo.distinct.join(', ')})
@@ -203,7 +227,7 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
               disabled={!hasProxy || checkingIp}
               title="프록시로 나가는 IP가 고정인지 확인합니다. IP가 바뀌면 네이버가 로그인을 끊습니다"
             >
-              {checkingIp ? 'IP 확인 중…' : '프록시 IP 확인'}
+              {checkingIp ? '진단 중…' : '프록시 진단'}
             </button>
             <button
               className="btn sm"
