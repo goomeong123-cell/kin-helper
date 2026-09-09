@@ -62,6 +62,31 @@ export async function closeAllKinContexts(): Promise<void> {
   for (const id of Array.from(contexts.keys())) await closeAccountContext(id);
 }
 
+
+/**
+ * 진짜 마우스 클릭 (isTrusted=true). 실패하면 JS 클릭으로 폴백한다.
+ * ★ JS로 누른 클릭은 isTrusted=false 라 사람이 누른 것과 구분된다.
+ *   특히 '답변'·'등록' 같은 핵심 버튼은 반드시 진짜 클릭이어야 한다.
+ */
+async function realClick(page: Page, selector: string, fallbackJs?: string): Promise<boolean> {
+  try {
+    const el = page.locator(selector).first();
+    if (await el.count()) {
+      await el.scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
+      await sleep(rnd(150, 400)); // 사람처럼 버튼을 보고 잠깐 뒤 누름
+      await el.click({ timeout: 6000 });
+      return true;
+    }
+  } catch {
+    // 가려져 있거나 타이밍 문제 — 아래 폴백
+  }
+  if (fallbackJs) {
+    const ok = await page.evaluate(fallbackJs).catch(() => false);
+    return !!ok;
+  }
+  return false;
+}
+
 function firstPage(ctx: BrowserContext): Promise<Page> {
   const p = ctx.pages()[0];
   return p ? Promise.resolve(p) : ctx.newPage();
@@ -93,14 +118,46 @@ export async function pwFindQuestion(
 
   await page.goto(QUESTION_LIST_URL, { waitUntil: 'domcontentloaded', timeout: 40000 }).catch(() => {});
   await human(2200, 3400);
-  await page.evaluate(ACTIVATE_TAB_JS).catch(() => {});
+  await realClick(page, '#contentsOfMain', ACTIVATE_TAB_JS);
   await human(1400, 2400);
 
   if (opts.keyword) {
-    await page.evaluate(searchInPageJS(opts.keyword)).catch(() => {});
+    // 사람처럼: 검색창 클릭 → 한 글자씩 입력 → 검색 버튼 클릭
+    let typed = false;
+    try {
+      const input = page.locator('#questionAll input._search_input').first();
+      if (await input.count()) {
+        await input.click({ timeout: 6000 });
+        await sleep(rnd(200, 500));
+        await input.fill('');
+        await page.keyboard.type(opts.keyword, { delay: rnd(60, 160) });
+        await sleep(rnd(250, 600));
+        typed = true;
+      }
+    } catch {
+      // 아래 JS 폴백
+    }
+    if (typed) {
+      const searched = await realClick(page, '#questionAll a._search_button');
+      if (!searched) await page.keyboard.press('Enter').catch(() => {});
+    } else {
+      await page.evaluate(searchInPageJS(opts.keyword)).catch(() => {});
+    }
     await human(2600, 3600);
   }
-  await page.evaluate(SORT_RECENT_JS).catch(() => {});
+  {
+    let sorted = false;
+    try {
+      const btn = page.locator('#questionAll a, #questionAll button').filter({ hasText: /^\s*최신순\s*$/ }).first();
+      if (await btn.count()) {
+        await btn.click({ timeout: 6000 });
+        sorted = true;
+      }
+    } catch {
+      // 폴백
+    }
+    if (!sorted) await page.evaluate(SORT_RECENT_JS).catch(() => {});
+  }
   await human(2000, 3000);
 
   let scanned = 0;
@@ -122,7 +179,23 @@ export async function pwFindQuestion(
       }
     }
     if (pageNo >= scanPages) break;
-    const moved = await page.evaluate(advancePageJS(pageNo + 1)).catch(() => false);
+    let moved: unknown = false;
+    try {
+      const num = page.locator('#questionAll a._page').filter({ hasText: new RegExp('^\s*' + (pageNo + 1) + '\s*$') }).first();
+      if (await num.count()) {
+        await num.click({ timeout: 6000 });
+        moved = true;
+      } else {
+        const next = page.locator('#questionAll a._nextPage, a._nextPage').first();
+        if (await next.count()) {
+          await next.click({ timeout: 6000 });
+          moved = true;
+        }
+      }
+    } catch {
+      // 폴백
+    }
+    if (!moved) moved = await page.evaluate(advancePageJS(pageNo + 1)).catch(() => false);
     if (!moved) break;
     onStep?.(`${pageNo}페이지에 쓸 질문 없음 → 다음 페이지`);
     pageNo++;
@@ -195,7 +268,11 @@ export async function pwAnswerQuestion(
     }
 
     onStep?.('답변 버튼 클릭');
-    const opened = await page.evaluate(OPEN_EDITOR_JS).catch(() => false);
+    const opened = await realClick(
+      page,
+      'button._answerWriteButton, .endAnswerButton._answerWriteButton, ._scrollToEditor',
+      OPEN_EDITOR_JS,
+    );
     if (!opened) return { typed: false, submitted: false, error: "'답변' 버튼 없음(로그인/페이지 확인)" };
     await human(1200, 2200);
 
@@ -240,7 +317,7 @@ export async function pwAnswerQuestion(
 
     await human(1200, 2400);
     onStep?.('등록 버튼 클릭');
-    const submitted = await page.evaluate(SUBMIT_JS).catch(() => false);
+    const submitted = await realClick(page, '#answerRegisterButton, button._answerRegisterButton', SUBMIT_JS);
     if (!submitted) return { typed: true, submitted: false, error: "'등록' 버튼을 찾지 못함" };
     await human(1800, 3000);
     return { typed: true, submitted: true };
