@@ -23,6 +23,7 @@ import {
   type PostMode,
 } from './naver';
 import { loginWithRealChrome, checkProxyExitIp } from './pwlogin';
+import { decryptSecret, encryptSecret, hasSecret, isEncryptionAvailable } from './secret';
 import {
   getAccountContext,
   closeAccountContext,
@@ -171,9 +172,14 @@ export function registerIpc(ipcMain: IpcMain) {
   });
 
   /* ---------- 계정 + 프록시 ---------- */
-  ipcMain.handle('accounts:list', () =>
-    db().prepare('SELECT * FROM accounts ORDER BY created_at ASC').all(),
-  );
+  ipcMain.handle('accounts:list', () => {
+    const rows = db().prepare('SELECT * FROM accounts ORDER BY created_at ASC').all() as any[];
+    // 비밀번호는 화면으로 절대 내보내지 않는다. 저장 여부만 알려준다.
+    return rows.map((r) => {
+      const { naver_pw, ...rest } = r;
+      return { ...rest, has_password: hasSecret(naver_pw) };
+    });
+  });
   ipcMain.handle('accounts:create', (_e, naverId: string) => {
     const id = (naverId || '').trim();
     if (!id) return { ok: false, error: '네이버 ID를 입력하세요.' };
@@ -204,6 +210,20 @@ export function registerIpc(ipcMain: IpcMain) {
     ];
     const next: Record<string, any> = {};
     for (const c of cols) next[c] = fields[c] ?? cur[c];
+    // 비밀번호는 평문으로 저장하지 않는다 (OS 암호화). 빈 문자열이면 삭제.
+    let pwToSave = cur.naver_pw ?? null;
+    if (typeof fields.naver_pw === 'string') {
+      const raw = fields.naver_pw;
+      if (raw === '') {
+        pwToSave = null;
+      } else {
+        const enc = encryptSecret(raw);
+        if (enc === null) {
+          return { error: '이 PC에서 안전한 암호화를 쓸 수 없어 비밀번호를 저장하지 않았습니다.' };
+        }
+        pwToSave = enc;
+      }
+    }
     db()
       .prepare(
         `UPDATE accounts SET naver_id=?, memo=?, daily_limit=?, status=?, proxy_host=?, proxy_port=?, proxy_user=?, proxy_pass=? WHERE id=?`,
@@ -219,8 +239,12 @@ export function registerIpc(ipcMain: IpcMain) {
         next.proxy_pass,
         id,
       ]);
-    return db().prepare('SELECT * FROM accounts WHERE id = ?').get([id]);
+    db().prepare('UPDATE accounts SET naver_pw=? WHERE id=?').run([pwToSave, id]);
+    const row = db().prepare('SELECT * FROM accounts WHERE id = ?').get([id]) as any;
+    const { naver_pw, ...rest } = row;
+    return { ...rest, has_password: hasSecret(naver_pw) };
   });
+  ipcMain.handle('accounts:canStorePassword', () => isEncryptionAvailable());
   ipcMain.handle('accounts:remove', (_e, id: number) => {
     db().prepare('DELETE FROM accounts WHERE id = ?').run([id]);
     return true;
@@ -247,6 +271,7 @@ export function registerIpc(ipcMain: IpcMain) {
         applied = await importCookiesToAccountSession(accP, cookies);
         pushLog(`[${a.naver_id}] 세션 적용됨 (쿠키 ${applied}개) — 창은 편하게 쓰다가 닫으세요`);
       },
+      decryptSecret(a.naver_pw) || undefined,
     );
     if (!res.ok || !res.cookies) {
       return { ok: false, error: res.error || '로그인에 실패했습니다.' };

@@ -119,6 +119,7 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
     proxy_port: account.proxy_port || '',
     proxy_user: account.proxy_user || '',
     proxy_pass: account.proxy_pass || '',
+    naver_pw: '', // 비워두면 기존 비밀번호 유지 (화면으로는 절대 불러오지 않음)
   });
 
   async function save() {
@@ -318,6 +319,29 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
         <div>
           <label className="label">프록시 비밀번호 (선택)</label>
           <input className="field" type="password" value={f.proxy_pass} onChange={(e) => setF({ ...f, proxy_pass: e.target.value })} />
+        </div>
+        <div style={{ gridColumn: '1 / -1' }}>
+          <label className="label">
+            네이버 비밀번호 (선택){' '}
+            {account.has_password && (
+              <span className="badge green" style={{ fontSize: 11 }}>
+                저장됨
+              </span>
+            )}
+          </label>
+          <input
+            className="field"
+            type="password"
+            placeholder={account.has_password ? '저장돼 있음 · 바꾸려면 새로 입력' : '입력하면 로그인 시 자동으로 입력됩니다'}
+            value={f.naver_pw}
+            onChange={(e) => setF({ ...f, naver_pw: e.target.value })}
+          />
+          <div className="muted" style={{ fontSize: 12, marginTop: 6, lineHeight: 1.6 }}>
+            이 PC에서만 풀리도록 <b>OS 암호화(Windows DPAPI)로 저장</b>됩니다. 평문으로 저장하지 않고, 화면으로 다시 불러오지도 않습니다.
+            <br />
+            로그인할 때 <b>쿠키가 없을 때만 1회</b> 자동 입력합니다. 캡차·2차인증·보호조치가 뜨면 즉시 멈추고 창을 넘겨드립니다.
+            {account.has_password && ' (지우려면 빈 칸으로 두고 저장하지 말고, 아무 글자나 지운 뒤 저장하면 삭제됩니다)'}
+          </div>
         </div>
         <div>
           <label className="label">일일 답변 한도</label>

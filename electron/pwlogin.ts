@@ -151,6 +151,8 @@ export async function loginWithRealChrome(
   onStatus?: (s: string) => void,
   // 로그인이 확인되는 즉시 호출된다(창은 그대로 열려 있음) — 앱 세션에 바로 반영하기 위함
   onCookies?: (c: NonNullable<PwLoginResult['cookies']>) => void | Promise<void>,
+  // 저장된 비밀번호가 있으면 '딱 1회' 자동 입력한다 (없으면 사람이 직접 입력)
+  password?: string,
 ): Promise<PwLoginResult> {
   let chromium: typeof import('playwright').chromium;
   try {
@@ -211,6 +213,14 @@ export async function loginWithRealChrome(
     }
     if (!clicked && !/nidlogin/.test(page.url())) {
       await page.goto('https://nid.naver.com/nidlogin.login', { waitUntil: 'domcontentloaded' }).catch(() => {});
+    }
+    // 저장된 비밀번호가 있으면 여기서 딱 한 번 자동 입력한다.
+    // (실패하거나 캡차/추가인증이 뜨면 그대로 두고 사람이 처리 — 절대 반복하지 않는다)
+    if (password) {
+      const r = await tryAutoLogin(page, acc.naverId, password, onStatus);
+      if (r === 'ok') onStatus?.('자동 로그인 시도함 — 결과 확인 중…');
+      else if (r === 'challenge') onStatus?.('추가 확인이 필요합니다 — 창에서 직접 처리해 주세요.');
+      else onStatus?.('자동 입력에 실패했습니다 — 창에서 직접 로그인해 주세요.');
     }
     onStatus?.('브라우저를 열었습니다. 로그인/프로필 설정을 끝내고 창을 닫아 주세요.');
 
@@ -420,4 +430,80 @@ export async function checkProxyExitIp(acc: AccountProxy, times = 6): Promise<Pr
   const clockSkewSec = await checkClockSkewSec();
 
   return { ok: true, ips, distinct, stable: distinct.length === 1, leakHeaders, anonymous, clockSkewSec };
+}
+
+/**
+ * 저장된 비밀번호로 로그인 폼을 자동 입력한다. (사람이 치는 것과 같은 실제 키 입력)
+ *
+ * 안전 원칙 — 카페포스터에서 검증된 것과 동일:
+ *   · 쿠키가 없을 때 '딱 1회'만 시도한다. 반복 자동 로그인은 보호조치를 부른다.
+ *   · 캡차/2차 인증/보호조치가 뜨면 즉시 멈추고 사람에게 넘긴다(자동으로 풀지 않는다).
+ */
+export async function tryAutoLogin(
+  page: import('playwright').Page,
+  naverId: string,
+  password: string,
+  onStatus?: (s: string) => void,
+): Promise<'ok' | 'challenge' | 'failed'> {
+  if (!naverId || !password) return 'failed';
+  try {
+    const id = page.locator('#id');
+    const pw = page.locator('#pw');
+    if (!(await id.count()) || !(await pw.count())) return 'failed';
+
+    onStatus?.('아이디 입력 중…');
+    await id.click({ timeout: 8000 });
+    await new Promise((r) => setTimeout(r, 200 + Math.random() * 400));
+    // 실제 키 입력 (사람 타이핑 속도)
+    for (const ch of naverId) {
+      await page.keyboard.type(ch, { delay: 60 + Math.floor(Math.random() * 110) });
+    }
+    await new Promise((r) => setTimeout(r, 300 + Math.random() * 500));
+
+    onStatus?.('비밀번호 입력 중…');
+    await pw.click({ timeout: 8000 });
+    await new Promise((r) => setTimeout(r, 200 + Math.random() * 400));
+    for (const ch of password) {
+      await page.keyboard.type(ch, { delay: 60 + Math.floor(Math.random() * 120) });
+    }
+    await new Promise((r) => setTimeout(r, 400 + Math.random() * 600));
+
+    onStatus?.('로그인 버튼 클릭');
+    let clicked = false;
+    for (const sel of ['#log\.login', '#loginBtn_row', 'button.btn_login', '.btn_login', 'button[type="submit"]']) {
+      try {
+        const b = page.locator(sel).first();
+        if (await b.count()) {
+          await b.click({ timeout: 6000 });
+          clicked = true;
+          break;
+        }
+      } catch {
+        /* 다음 선택자 */
+      }
+    }
+    if (!clicked) await pw.press('Enter').catch(() => {});
+    await page.waitForLoadState('domcontentloaded', { timeout: 12000 }).catch(() => {});
+    await new Promise((r) => setTimeout(r, 2000));
+
+    // 캡차/2차 인증/보호조치가 떴으면 절대 자동으로 진행하지 않는다
+    const blocked = await page
+      .evaluate(`
+        (function () {
+          var t = (document.body ? (document.body.innerText || '') : '').slice(0, 4000);
+          if (document.querySelector('#captcha, #captchaimg, input[name="captcha"]')) return '보안문자';
+          if (/보호\s*\(?[^)]{0,8}\)?\s*조치|영구\s*정지|아이디\s*잠금|이용이\s*제한/.test(t)) return '보호조치';
+          if (/2단계|인증번호|본인확인|기기\s*등록/.test(t)) return '추가인증';
+          return '';
+        })();
+      `)
+      .catch(() => '');
+    if (blocked) {
+      onStatus?.(`⚠ ${blocked} 화면 — 창에서 직접 처리해 주세요 (자동 진행 중단)`);
+      return 'challenge';
+    }
+    return 'ok';
+  } catch {
+    return 'failed';
+  }
 }

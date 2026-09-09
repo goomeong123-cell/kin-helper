@@ -26,6 +26,8 @@ export interface Account {
   proxy_port: string | null;
   proxy_user: string | null;
   proxy_pass: string | null;
+  /** 비밀번호가 저장돼 있는지 (실제 값은 화면으로 오지 않음) */
+  has_password?: boolean;
   created_at: string;
 }
 
