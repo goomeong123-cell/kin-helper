@@ -309,12 +309,38 @@ export async function pwAnswerQuestion(
       .catch(() => false);
     if (already) return { typed: false, submitted: false, error: '이미 답변한 질문(건너뜀)' };
 
-    // 로그인이 풀렸으면 명확히 알린다 (엉뚱한 실패로 기록되지 않게)
+    // 로그인이 풀렸으면 '그 순간의 상태'를 그대로 남긴다.
+    // (무엇이 세션을 끊었는지 알아야 원인을 특정할 수 있다 — 추측 금지)
     if (!(await pwIsLoggedIn(ctx))) {
+      let diag = '';
+      try {
+        const snap = (await page.evaluate(`
+          (function () {
+            var t = (document.body ? (document.body.innerText || '') : '').replace(/\s+/g, ' ').trim();
+            return {
+              url: location.href.slice(0, 120),
+              title: (document.title || '').slice(0, 60),
+              head: t.slice(0, 220),
+              hasLoginLink: !!document.querySelector('a[href*="nidlogin.login"]')
+            };
+          })();
+        `)) as { url: string; title: string; head: string; hasLoginLink: boolean };
+        const cs = await ctx.cookies().catch(() => []);
+        const names = cs
+          .filter((c) => c.name.startsWith('NID') || c.name === 'NNB')
+          .map((c) => c.name)
+          .join(',');
+        diag =
+          ` | 화면="${snap.title}" · 남은쿠키=[${names || '없음'}]` +
+          ` · 로그인링크=${snap.hasLoginLink ? '있음' : '없음'} · 내용="${snap.head}"`;
+      } catch {
+        /* 진단 실패는 무시 */
+      }
+      onStep?.(`⚠ 로그인 끊김 감지${diag}`);
       return {
         typed: false,
         submitted: false,
-        error: '로그인이 풀렸습니다 — 계정·프록시 탭에서 다시 로그인하세요',
+        error: '로그인이 풀렸습니다 — 계정·프록시 탭에서 다시 로그인하세요' + diag,
       };
     }
 
@@ -375,5 +401,26 @@ export async function pwAnswerQuestion(
     return { typed: true, submitted: true };
   } catch (e) {
     return { typed: false, submitted: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/**
+ * 이 계정의 '크롬 창이 실제로' 어떤 IP로 나가는지 확인한다.
+ * ★ 옵션에 프록시를 넣는 것과, 브라우저가 정말 그 IP로 나가는 건 다른 문제다.
+ *   여기서 프록시 IP가 아닌 값이 나오면 계정이 VM 실제 IP로 접속 중이라는 뜻.
+ */
+export async function pwCheckBrowserExitIp(ctx: BrowserContext): Promise<string | null> {
+  try {
+    const p = await ctx.newPage();
+    try {
+      await p.goto('https://api.ipify.org?format=json', { waitUntil: 'domcontentloaded', timeout: 20000 });
+      const txt = await p.evaluate('document.body ? document.body.innerText : ""');
+      const m = /(\d{1,3}(?:\.\d{1,3}){3})/.exec(String(txt));
+      return m ? m[1] : null;
+    } finally {
+      await p.close().catch(() => {});
+    }
+  } catch {
+    return null;
   }
 }

@@ -30,6 +30,7 @@ import {
   pwIsLoggedIn,
   pwFindQuestion,
   pwAnswerQuestion,
+  pwCheckBrowserExitIp,
 } from './pwkin';
 
 const DEFAULT_DAILY_PROMPT =
@@ -259,6 +260,21 @@ export function registerIpc(ipcMain: IpcMain) {
   ipcMain.handle('accounts:checkProxyIp', async (_e, id: number) => {
     const a = db().prepare('SELECT * FROM accounts WHERE id = ?').get([id]) as any;
     if (!a) return { ok: false, error: '계정을 찾을 수 없습니다.' };
+    // 같은 프록시를 여러 계정이 공유하면 그 자체로 네이버가 계정을 묶는다 → 먼저 경고
+    try {
+      const dup = db()
+        .prepare(
+          "SELECT naver_id FROM accounts WHERE id != ? AND proxy_host = ? AND proxy_port = ? AND proxy_host IS NOT NULL",
+        )
+        .all([id, a.proxy_host, a.proxy_port]) as any[];
+      if (dup.length) {
+        pushLog(
+          `[${a.naver_id}] ⚠ 같은 프록시를 쓰는 계정이 또 있습니다: ${dup.map((d) => d.naver_id).join(', ')} — 계정이 서로 묶입니다`,
+        );
+      }
+    } catch {
+      // ignore
+    }
     pushLog(`[${a.naver_id}] 프록시 IP 확인 중… (약 15초)`);
     const r = await checkProxyExitIp(accountToProxy(a), 6);
     if (!r.ok) {
@@ -907,6 +923,18 @@ export function registerIpc(ipcMain: IpcMain) {
       prevAccountId = accountId;
       pushLog(`[${acc.naver_id}] 크롬 여는 중 · 로그인 확인…`);
       kinCtx = await getAccountContext(accountToProxy(acc));
+      // 브라우저가 '실제로' 프록시로 나가는지 확인 (옵션만 넣고 실제론 안 타는 경우 방지)
+      const realIp = await pwCheckBrowserExitIp(kinCtx);
+      if (realIp) {
+        const expected = String(acc.proxy_host || '');
+        const match = expected && realIp === expected;
+        pushLog(
+          `[${acc.naver_id}] 브라우저 실제 접속 IP: ${realIp}` +
+            (expected ? (match ? ' (프록시와 일치 ✓)' : ` ⚠ 프록시(${expected})와 다름!`) : ''),
+        );
+      } else {
+        pushLog(`[${acc.naver_id}] ⚠ 접속 IP 확인 실패`);
+      }
       const okLogin = await pwIsLoggedIn(kinCtx);
       if (okLogin) pushLog(`[${acc.naver_id}] 로그인 확인됨 ✓`);
       else pushLog(`⚠ [${acc.naver_id}] 로그인 안 됨 — 계정·프록시 탭에서 로그인하세요`);
