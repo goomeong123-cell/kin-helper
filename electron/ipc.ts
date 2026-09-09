@@ -31,6 +31,7 @@ import {
   pwFindQuestion,
   pwAnswerQuestion,
   pwCheckBrowserExitIp,
+  pwDetectSuspension,
 } from './pwkin';
 
 const DEFAULT_DAILY_PROMPT =
@@ -882,6 +883,8 @@ export function registerIpc(ipcMain: IpcMain) {
     let acc: any = null;
     let dailyLimit = 5;
     let prevAccountId: number | null = null;
+    // 이번 실행에서 보호조치가 감지돼 제외된 계정들 (더 건드리지 않는다)
+    const bannedAccounts = new Set<number>();
     let kinCtx: Awaited<ReturnType<typeof getAccountContext>> | null = null;
 
     // 오늘 이 계정이 아직 한도가 남았는지
@@ -902,6 +905,7 @@ export function registerIpc(ipcMain: IpcMain) {
       let pick = -1;
       for (let i = 0; i < accountIds.length; i++) {
         const cand = accountIds[(rotPtr + i) % accountIds.length];
+        if (bannedAccounts.has(cand)) continue;
         if (underLimit(cand)) {
           pick = cand;
           rotPtr = (rotPtr + i + 1) % accountIds.length;
@@ -934,6 +938,20 @@ export function registerIpc(ipcMain: IpcMain) {
         );
       } else {
         pushLog(`[${acc.naver_id}] ⚠ 접속 IP 확인 실패`);
+      }
+      // ★ 보호조치/정지 계정으로 계속 시도하면 상황만 나빠진다 → 감지되면 즉시 제외
+      const suspended = await pwDetectSuspension(kinCtx);
+      if (suspended) {
+        try {
+          db().prepare("UPDATE accounts SET status='suspect' WHERE id=?").run([accountId]);
+        } catch {
+          // ignore
+        }
+        bannedAccounts.add(accountId);
+        pushLog(`⛔ [${acc.naver_id}] 보호조치/정지 감지 — 이 계정은 이번 실행에서 제외합니다 ("${suspended}")`);
+        await closeAccountContext(accountId).catch(() => {});
+        kinCtx = null;
+        return await switchAccount();
       }
       const okLogin = await pwIsLoggedIn(kinCtx);
       if (okLogin) pushLog(`[${acc.naver_id}] 로그인 확인됨 ✓`);
@@ -1115,6 +1133,26 @@ export function registerIpc(ipcMain: IpcMain) {
         res = { typed: false, submitted: false, error: e instanceof Error ? e.message : String(e) };
       }
       if (res.error) {
+        // 작업 도중 보호조치가 걸렸는지 확인 — 걸렸으면 이 계정은 즉시 중단(더 시도하면 악화)
+        if (kinCtx && /로그인이 풀렸|답변' 버튼 없음/.test(res.error)) {
+          const sus = await pwDetectSuspension(kinCtx);
+          if (sus) {
+            try {
+              db().prepare("UPDATE accounts SET status='suspect' WHERE id=?").run([accountId]);
+            } catch {
+              // ignore
+            }
+            bannedAccounts.add(accountId);
+            pushLog(`⛔ [${acc.naver_id}] 보호조치/정지 감지 — 이 계정 중단 ("${sus}")`);
+            await closeAccountContext(accountId).catch(() => {});
+            kinCtx = null;
+            if (!(await switchAccount())) {
+              pushLog('사용 가능한 계정이 없습니다 — 종료');
+              break;
+            }
+            continue;
+          }
+        }
         const isFaqErr = /FAQ/.test(res.error);
         // 답변은 실패로 기록(이력에 빨간 '실패'/'FAQ 실패'로 표시, error 저장).
         if (gen?.answer?.id)

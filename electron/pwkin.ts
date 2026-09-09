@@ -424,3 +424,40 @@ export async function pwCheckBrowserExitIp(ctx: BrowserContext): Promise<string 
     return null;
   }
 }
+
+// 명백한 정지/보호조치 문구만 잡는다 (오탐 최소화 — 약관·공지의 단순 언급은 제외).
+// 카페포스터에서 검증된 패턴을 그대로 사용.
+const SUSPEND_RE =
+  /보호\s*(\([^)]{0,8}\))?\s*조치|영구\s*정지|강제\s*탈퇴|아이디\s*잠금|활동(이|을)?\s*(정지|제한)\s*(되|됩|된|중)|이용(이|을)?\s*(정지|제한)\s*(되|됩|된|중)|이용이\s*제한된\s*회원|운영(원칙|정책)\s*위반|회원\s*자격\s*(정지|박탈)/;
+
+/**
+ * 지금 화면에 '보호조치/정지' 문구가 있으면 그 문맥을 돌려준다.
+ * ★ 잠긴 계정으로 계속 시도하면 상황이 더 나빠지므로, 감지되면 즉시 그 계정을 멈춰야 한다.
+ */
+export async function pwDetectSuspension(ctx: BrowserContext): Promise<string | null> {
+  try {
+    const page = await activePage(ctx);
+    for (const f of page.frames()) {
+      try {
+        const text = (await f.evaluate(
+          '(document.body ? (document.body.innerText || "") : "").slice(0, 6000)',
+        )) as string;
+        if (!text) continue;
+        const m = SUSPEND_RE.exec(text);
+        if (m) {
+          const idx = text.indexOf(m[0]);
+          const around = text
+            .slice(Math.max(0, idx - 25), idx + 70)
+            .replace(/\s+/g, ' ')
+            .trim();
+          return around || m[0];
+        }
+      } catch {
+        /* 프레임 접근 불가 — 무시 */
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
