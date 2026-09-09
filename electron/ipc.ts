@@ -407,7 +407,7 @@ export function registerIpc(ipcMain: IpcMain) {
             let askedAt: string | null = null;
             if (!exists) {
               try {
-                const d = await fetchQuestionDetail(q.url);
+                const d = await fetchQuestionDetail(q.url, account);
                 askedAt = d.askedAt || null;
               } catch {
                 // ignore
@@ -495,7 +495,13 @@ export function registerIpc(ipcMain: IpcMain) {
     (db().prepare('SELECT value FROM settings WHERE key = ?').get([k]) as any)?.value || '';
 
   // 질문 하나에 대한 답변 초안 생성 (단건/전체 공용)
-  async function doGenerate(questionId: number, brandArg?: number, includePromo?: boolean) {
+  async function doGenerate(
+    questionId: number,
+    brandArg?: number,
+    includePromo?: boolean,
+    // 질문 상세를 읽을 때 쓸 프록시 (없으면 프록시 없이 나가 VM 실제 IP가 노출되므로 가급적 전달)
+    detailProxy?: AccountProxy,
+  ) {
     const q = db().prepare('SELECT * FROM questions WHERE id = ?').get([questionId]) as any;
     if (!q) return { ok: false, error: '질문을 찾을 수 없습니다.' };
 
@@ -519,7 +525,7 @@ export function registerIpc(ipcMain: IpcMain) {
     let questionTitle = q.title;
     let questionBody = q.content || '';
     try {
-      const detail = await fetchQuestionDetail(q.url);
+      const detail = await fetchQuestionDetail(q.url, detailProxy);
       if (detail.title) questionTitle = detail.title;
       if (detail.body && detail.body.length > questionBody.length) questionBody = detail.body;
     } catch {
@@ -658,14 +664,21 @@ export function registerIpc(ipcMain: IpcMain) {
         };
       }
 
-      const result = await openAnswerWindow({
-        account: accountToProxy(acc),
-        question: { url: q.url, title: q.title },
-        answer: a.body,
-        mode: opts.mode,
-      });
+      // ★ 등록도 '로그인한 그 크롬'에서 해야 한다.
+      //   Electron 창으로 로그인 쿠키를 옮겨 쓰면 네이버가 세션 탈취로 보고 계정을 끊는다.
+      const accP = accountToProxy(acc);
+      const ctx = await getAccountContext(accP);
+      const submit = opts.mode === 'auto';
+      const r = await pwAnswerQuestion(ctx, q.url, a.body, submit, (m) =>
+        pushLog(`[${acc.naver_id}] ${m}`),
+      );
+      const result = {
+        ok: r.typed || r.submitted,
+        error: r.error,
+        needsHuman: submit ? !r.submitted : true,
+      };
 
-      const posted = result.ok && opts.mode === 'auto' && result.needsHuman === false;
+      const posted = r.submitted;
       db()
         .prepare('UPDATE answers SET account_id=?, mode=?, status=?, error=?, posted_at=? WHERE id=?')
         .run([
@@ -1032,7 +1045,7 @@ export function registerIpc(ipcMain: IpcMain) {
 
       // 질문 본문을 실제로 가져왔는지 확인해 로그에 남김
       try {
-        const d = await fetchQuestionDetail(targetUrl);
+        const d = await fetchQuestionDetail(targetUrl, accountToProxy(acc));
         pushLog(
           `질문 확인: 제목 ${(d.title || targetTitle || '').length}자 / 본문 ${(d.body || '').length}자`,
         );
@@ -1040,7 +1053,7 @@ export function registerIpc(ipcMain: IpcMain) {
         // ignore
       }
       pushLog(`답변 생성 중: ${String(targetTitle).slice(0, 24)}`);
-      const gen = (await doGenerate(qrow.id, brandId, isPromo)) as any;
+      const gen = (await doGenerate(qrow.id, brandId, isPromo, accountToProxy(acc))) as any;
       if (!gen.ok || !gen.answer) {
         pushLog('생성 실패 — 다음');
         await sleepRnd(5000, 10000);

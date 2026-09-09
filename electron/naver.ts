@@ -336,6 +336,27 @@ async function getAccountSession(acc: AccountProxy) {
   return ses;
 }
 
+/**
+ * 수집 전용 세션 — 그 계정의 '프록시만' 쓰고 로그인 쿠키는 쓰지 않는다.
+ * ★ 로그인 세션을 Electron에서 쓰면(진짜 크롬에서 로그인해 놓고) 네이버가
+ *   세션 탈취로 보고 계정을 끊는다. 수집은 로그인이 필요 없으므로 분리한다.
+ */
+async function getProxyOnlySession(acc?: AccountProxy) {
+  const part = acc ? `persist:kin-collect-${acc.id}` : 'persist:kin-collect';
+  const ses = session.fromPartition(part);
+  if (acc?.proxyHost && acc?.proxyPort) {
+    const rule = `${acc.proxyHost}:${acc.proxyPort}`;
+    await ses.setProxy({ proxyRules: `http=${rule};https=${rule}` });
+    if (acc.proxyUser) {
+      proxyCredById.set(acc.id, { user: acc.proxyUser, pass: acc.proxyPass || '' });
+    }
+  } else {
+    await ses.setProxy({ proxyRules: 'direct://' });
+  }
+  applySessionSpoof(ses);
+  return ses;
+}
+
 function humanDelay(min = 600, max = 1600): Promise<void> {
   // 사람처럼: 고정값 대신 범위 내 대기
   const ms = min + Math.floor((max - min) * Math.abs(Math.sin(Date.now() / 1000)));
@@ -533,10 +554,9 @@ export async function collectQuestions(opts: {
   /** 이미 수집한 질문인지 판별 — 있으면 목표 개수에 세지 않고 다음 페이지에서 더 찾는다 */
   isNew?: (kinKey: string) => boolean;
 }): Promise<CollectedQuestion[]> {
-  const ses = opts.account
-    ? await getAccountSession(opts.account)
-    : session.fromPartition('persist:kin-collect');
-  if (!opts.account) applySessionSpoof(ses); // 수집 세션도 크롬으로 위장 (account면 getAccountSession에서 이미 적용)
+  // 수집은 로그인 없이도 되고(실측 확인), 로그인 세션을 여기서 쓰면 세션이 끊긴다.
+  // → 계정의 '프록시만' 물린 별도 세션 사용.
+  const ses = await getProxyOnlySession(opts.account);
 
   const win = new BrowserWindow({
     show: false,
@@ -592,16 +612,40 @@ function decodeEntities(s: string): string {
  */
 export async function fetchQuestionDetail(
   url: string,
+  acc?: AccountProxy,
 ): Promise<{ title?: string; body?: string; askedAt?: string }> {
   try {
-    const res = await fetch(normalizeKinUrl(url), {
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36',
-      },
-    });
-    if (!res.ok) return {};
-    const html = await res.text();
+    // ★ 반드시 그 계정의 프록시로 나가야 한다.
+    //   예전엔 프록시 없이 나가서, 답변할 때마다 VM의 진짜 IP가 지식인에 찍혔다.
+    //   그러면 프록시로 IP를 갈라놔도 모든 계정이 한 기계로 묶인다.
+    let html: string;
+    if (acc?.proxyHost && acc?.proxyPort) {
+      const { request } = await import('playwright');
+      const ctx = await request.newContext({
+        proxy: {
+          server: `http://${acc.proxyHost}:${acc.proxyPort}`,
+          username: acc.proxyUser || undefined,
+          password: acc.proxyPass || undefined,
+        },
+        userAgent: CHROME_UA,
+        extraHTTPHeaders: { 'Accept-Language': 'ko-KR,ko;q=0.9' },
+        ignoreHTTPSErrors: true,
+        timeout: 20000,
+      });
+      try {
+        const r = await ctx.get(normalizeKinUrl(url), { timeout: 20000 });
+        if (!r.ok()) return {};
+        html = await r.text();
+      } finally {
+        await ctx.dispose().catch(() => {});
+      }
+    } else {
+      const res = await fetch(normalizeKinUrl(url), {
+        headers: { 'User-Agent': CHROME_UA, 'Accept-Language': 'ko-KR,ko;q=0.9' },
+      });
+      if (!res.ok) return {};
+      html = await res.text();
+    }
     const pick = (re: RegExp) => {
       const m = re.exec(html);
       return m ? decodeEntities(m[1]).trim() : '';
