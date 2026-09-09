@@ -87,9 +87,29 @@ async function realClick(page: Page, selector: string, fallbackJs?: string): Pro
   return false;
 }
 
+/** 목록 탭(첫 번째) */
 function firstPage(ctx: BrowserContext): Promise<Page> {
   const p = ctx.pages()[0];
   return p ? Promise.resolve(p) : ctx.newPage();
+}
+
+/** 지금 작업 중인 탭 = 가장 최근에 열린 탭 (지식인 질문은 '새 창'으로 열린다) */
+function activePage(ctx: BrowserContext): Promise<Page> {
+  const ps = ctx.pages();
+  const p = ps[ps.length - 1];
+  return p ? Promise.resolve(p) : ctx.newPage();
+}
+
+/** 목록 탭만 남기고 나머지 탭을 닫는다 (사람처럼 탭이 쌓이지 않게) */
+async function closeExtraTabs(ctx: BrowserContext): Promise<void> {
+  const ps = ctx.pages();
+  for (let i = ps.length - 1; i >= 1; i--) {
+    try {
+      await ps[i].close();
+    } catch {
+      /* ignore */
+    }
+  }
 }
 
 /** 로그인 여부 — 쿠키로 판정 (DOM보다 안정적) */
@@ -174,6 +194,30 @@ export async function pwFindQuestion(
         scanned++;
         if (!opts.isUsable || opts.isUsable(q)) {
           onStep?.(`${pageNo}페이지에서 질문 선택`);
+          // 주소로 점프하지 않고 '목록에서 그 질문을 실제로 클릭'해서 들어간다(사람과 동일).
+          const docId = (q.kinKey.split('-').pop() || '').trim();
+          if (docId) {
+            try {
+              const link = page.locator(`#questionAll a[href*="docId=${docId}"]`).first();
+              if (await link.count()) {
+                await link.scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
+                await sleep(rnd(300, 800)); // 제목 보고 잠깐 뒤 클릭
+                // 지식인 목록의 질문 링크는 '새 창'으로 열린다 → 새 탭을 받아서 이어서 작업
+                const [opened] = await Promise.all([
+                  ctx.waitForEvent('page', { timeout: 12000 }).catch(() => null),
+                  link.click({ timeout: 8000 }),
+                ]);
+                if (opened) {
+                  await opened.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
+                  await opened.bringToFront().catch(() => {});
+                } else {
+                  await page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
+                }
+              }
+            } catch {
+              // 클릭 실패 시엔 pwAnswerQuestion 이 주소로 열어준다
+            }
+          }
           return { picked: q, scanned, pages: pageNo };
         }
       }
@@ -244,10 +288,17 @@ export async function pwAnswerQuestion(
   submit: boolean,
   onStep?: (s: string) => void,
 ): Promise<{ typed: boolean; submitted: boolean; error?: string }> {
-  const page = await firstPage(ctx);
+  const page = await activePage(ctx);
   try {
-    onStep?.('질문 페이지 여는 중');
-    await page.goto(normalizeKinUrl(url), { waitUntil: 'domcontentloaded', timeout: 40000 });
+    // 목록에서 클릭해 이미 그 질문에 들어와 있으면 다시 주소로 이동하지 않는다.
+    const wantDoc = (/docId=(\d+)/.exec(url) || [])[1];
+    const alreadyThere = !!wantDoc && page.url().includes(`docId=${wantDoc}`);
+    if (alreadyThere) {
+      onStep?.('질문 페이지(목록에서 클릭해 진입)');
+    } else {
+      onStep?.('질문 페이지 여는 중');
+      await page.goto(normalizeKinUrl(url), { waitUntil: 'domcontentloaded', timeout: 40000 });
+    }
     await human(1800, 3200); // 질문 읽는 시간
 
     const isFaq = await page.evaluate(FAQ_CHECK_JS).catch(() => false);
@@ -320,6 +371,7 @@ export async function pwAnswerQuestion(
     const submitted = await realClick(page, '#answerRegisterButton, button._answerRegisterButton', SUBMIT_JS);
     if (!submitted) return { typed: true, submitted: false, error: "'등록' 버튼을 찾지 못함" };
     await human(1800, 3000);
+    await closeExtraTabs(ctx).catch(() => {});
     return { typed: true, submitted: true };
   } catch (e) {
     return { typed: false, submitted: false, error: e instanceof Error ? e.message : String(e) };
