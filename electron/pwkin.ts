@@ -581,3 +581,71 @@ export async function pwFingerprintDiag(ctx: BrowserContext): Promise<Fingerprin
     await page.close().catch(() => {});
   }
 }
+
+/**
+ * 워밍업 세션 — 로그인한 그 크롬으로 사람처럼 지식인을 '읽기만' 한다. 답변은 절대 하지 않는다.
+ * 목적: 네이버 서버에 "읽기만 하는 평범한 사용자"의 행동 이력을 쌓는 것 (카페포스터 warmup.ts 와 동일 원리).
+ * 스크롤은 진짜 마우스 휠, 질문은 목록에서 진짜 클릭(새 탭) → 체류 → 닫기. 한 세션 3~6분.
+ */
+export async function runWarmupSession(
+  ctx: BrowserContext,
+  onStep?: (s: string) => void,
+): Promise<{ opened: number; suspended: string | null }> {
+  const page = await firstPage(ctx);
+  let opened = 0;
+
+  // 가끔은 네이버 메인부터 들르는 게 사람답다
+  if (Math.random() < 0.4) {
+    onStep?.('네이버 메인 둘러보기');
+    await page.goto('https://www.naver.com/', { waitUntil: 'domcontentloaded', timeout: 40000 }).catch(() => {});
+    await human(3000, 8000);
+    await page.mouse.wheel(0, rnd(300, 900)).catch(() => {});
+    await human(2000, 6000);
+  }
+
+  onStep?.('지식인 답변대기 목록 둘러보기');
+  await page.goto(QUESTION_LIST_URL, { waitUntil: 'domcontentloaded', timeout: 40000 }).catch(() => {});
+  await human(2500, 5000);
+  await realClick(page, '#contentsOfMain', ACTIVATE_TAB_JS);
+  await human(2000, 4000);
+  for (let i = 0, n = rnd(2, 5); i < n; i++) {
+    await page.mouse.wheel(0, rnd(250, 700)).catch(() => {});
+    await human(2500, 7000);
+  }
+
+  // 질문 2~4개를 열어서 읽는다 (읽기만)
+  for (let i = 0, n = rnd(2, 5); i < n; i++) {
+    const links = page.locator('#questionAll a[href*="docId="]');
+    const count = await links.count().catch(() => 0);
+    if (!count) break;
+    const link = links.nth(rnd(0, Math.min(count, 12)));
+    await link.scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
+    await human(800, 2000); // 제목 읽고
+    const [tab] = await Promise.all([
+      ctx.waitForEvent('page', { timeout: 12000 }).catch(() => null),
+      link.click({ timeout: 8000 }).catch(() => {}),
+    ]);
+    const q = tab || page;
+    await q.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
+    onStep?.(`질문 읽는 중 (${i + 1})`);
+    for (let k = 0, m = rnd(2, 6); k < m; k++) {
+      await q.mouse.wheel(0, rnd(200, 600)).catch(() => {});
+      await human(3000, 10000);
+    }
+    await human(5000, 20000); // 다 읽고 잠깐
+    opened++;
+    if (tab) {
+      await tab.close().catch(() => {});
+      await human(2000, 5000);
+    }
+  }
+
+  // 가끔 다음 페이지도 한 번 넘겨본다
+  if (Math.random() < 0.3) {
+    await realClick(page, '#questionAll a._nextPage, a._nextPage');
+    await human(3000, 8000);
+  }
+
+  const suspended = await pwDetectSuspension(ctx);
+  return { opened, suspended };
+}

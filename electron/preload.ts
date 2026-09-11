@@ -32,6 +32,7 @@ const api = {
     openBrowser: (id: number) => ipcRenderer.invoke('accounts:openBrowser', id),
     checkProxyIp: (id: number) => ipcRenderer.invoke('accounts:checkProxyIp', id),
     fingerprint: (id: number) => ipcRenderer.invoke('accounts:fingerprint', id),
+    warmupNow: (id: number) => ipcRenderer.invoke('accounts:warmupNow', id),
   },
   questions: {
     collect: (opts: { brandId?: number; accountId?: number; limit?: number }) =>

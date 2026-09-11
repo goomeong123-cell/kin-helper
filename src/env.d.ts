@@ -28,6 +28,8 @@ export interface Account {
   proxy_pass: string | null;
   /** 비밀번호가 저장돼 있는지 (실제 값은 화면으로 오지 않음) */
   has_password?: boolean;
+  /** 워밍업 종료 시각(ISO). 미래면 워밍업 중(답변 안 함), null이면 투입 가능 */
+  warmup_until?: string | null;
   created_at: string;
 }
 
@@ -84,6 +86,7 @@ export interface Api {
     login: (id: number) => Promise<{ ok: boolean; error?: string }>;
     openBrowser: (id: number) => Promise<{ ok: boolean; error?: string }>;
     checkProxyIp: (id: number) => Promise<{ ok: boolean; ips?: string[]; distinct?: string[]; stable?: boolean; anonymous?: boolean; leakHeaders?: Array<{ name: string; value: string }>; clockSkewSec?: number | null; error?: string }>;
+    warmupNow: (id: number) => Promise<{ ok: boolean; error?: string }>;
     fingerprint: (id: number) => Promise<{ ok: boolean; error?: string; proxyIp?: string; ua?: string; cores?: number | null; memory?: number | null; screen?: string; timezone?: string; languages?: string; webglVendor?: string; webglRenderer?: string; canvasHash?: string; webrtcLeak?: boolean; leakedPublicIps?: string[]; vmLike?: boolean; fingerprintHash?: string }>;
   };
   questions: {

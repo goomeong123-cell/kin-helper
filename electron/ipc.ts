@@ -36,6 +36,7 @@ import {
   pwOpenQuestion,
   pwReadOpenQuestion,
   pwFingerprintDiag,
+  runWarmupSession,
 } from './pwkin';
 
 const DEFAULT_DAILY_PROMPT =
@@ -213,6 +214,12 @@ export function registerIpc(ipcMain: IpcMain) {
     ];
     const next: Record<string, any> = {};
     for (const c of cols) next[c] = fields[c] ?? cur[c];
+    // 워밍업 종료 시각: ISO 문자열이면 설정, 빈 문자열이면 해제, 없으면 유지
+    if (typeof fields.warmup_until === 'string') {
+      db()
+        .prepare('UPDATE accounts SET warmup_until=? WHERE id=?')
+        .run([fields.warmup_until === '' ? null : fields.warmup_until, id]);
+    }
     // 비밀번호는 평문으로 저장하지 않는다 (OS 암호화). 빈 문자열이면 삭제.
     let pwToSave = cur.naver_pw ?? null;
     if (typeof fields.naver_pw === 'string') {
@@ -828,6 +835,10 @@ export function registerIpc(ipcMain: IpcMain) {
   let autoCount = 0;
   let autoNextResolve: (() => void) | null = null;
   const autoLog: string[] = [];
+  // 워밍업 세션이 돌고 있는 계정 id (완전자동과 크롬을 동시에 잡지 않도록)
+  let warmupBusy: number | null = null;
+  // 계정별 다음 워밍업 세션 예정 시각
+  const warmupNextAt = new Map<number, number>();
 
   // 상태를 갱신하면서 로그로도 남김 (어디서 멈추는지 화면에서 바로 보이게)
   const pushLog = (msg: string) => {
@@ -836,6 +847,77 @@ export function registerIpc(ipcMain: IpcMain) {
     autoLog.unshift(`[${t}] ${msg}`);
     if (autoLog.length > 12) autoLog.pop();
   };
+
+  // 워밍업 중인 계정인지 (warmup_until 이 미래면 아직 답변 금지)
+  const inWarmup = (id: number) => {
+    const a = db().prepare('SELECT warmup_until FROM accounts WHERE id=?').get([id]) as any;
+    return !!a?.warmup_until && new Date(a.warmup_until).getTime() > Date.now();
+  };
+
+  /* ---------- 워밍업: 답변 없이 사람처럼 지식인만 읽는다 (계정/프록시별) ---------- */
+  // 한 세션 = 그 계정의 크롬(로그인한 프로필·프록시)으로 3~6분 읽기. 답변 절대 안 함.
+  async function runWarmupOnce(accountId: number): Promise<{ ok: boolean; error?: string }> {
+    if (autoRunning) return { ok: false, error: '완전자동 실행 중에는 워밍업을 돌리지 않습니다.' };
+    if (warmupBusy != null) return { ok: false, error: '다른 계정 워밍업이 진행 중입니다.' };
+    const a = db().prepare('SELECT * FROM accounts WHERE id = ?').get([accountId]) as any;
+    if (!a) return { ok: false, error: '계정을 찾을 수 없습니다.' };
+    if (!a.proxy_host || !a.proxy_port) return { ok: false, error: '프록시가 없는 계정은 워밍업하지 않습니다.' };
+    warmupBusy = accountId;
+    try {
+      pushLog(`[${a.naver_id}] 워밍업 세션 시작 (읽기만)`);
+      const ctx = await getAccountContext(accountToProxy(a));
+      if (!(await pwIsLoggedIn(ctx))) {
+        pushLog(`⚠ [${a.naver_id}] 로그인 안 됨 — 워밍업 건너뜀 (계정·프록시 탭에서 로그인하세요)`);
+        return { ok: false, error: '로그인 안 됨' };
+      }
+      const r = await runWarmupSession(ctx, (s) => pushLog(`[${a.naver_id}] 워밍업 · ${s}`));
+      if (r.suspended) {
+        db().prepare("UPDATE accounts SET status='suspect', warmup_until=NULL WHERE id=?").run([accountId]);
+        pushLog(`⛔ [${a.naver_id}] 워밍업 중 보호조치/정지 감지 — 워밍업 중단 ("${r.suspended}")`);
+        return { ok: false, error: r.suspended };
+      }
+      pushLog(`[${a.naver_id}] 워밍업 세션 끝 · 질문 ${r.opened}개 읽음`);
+      return { ok: true };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      pushLog(`[${a.naver_id}] 워밍업 오류: ${msg}`);
+      return { ok: false, error: msg };
+    } finally {
+      await closeAccountContext(accountId).catch(() => {});
+      warmupBusy = null;
+      // 다음 세션은 90~180분 뒤 (사람이 하루에 몇 번 들르는 정도)
+      warmupNextAt.set(accountId, Date.now() + (90 + Math.random() * 90) * 60 * 1000);
+    }
+  }
+
+  // 3분마다: 워밍업 중인 계정 중 예정 시각이 지난 계정 하나를 골라 세션 실행. 08~23시만.
+  // ponytail: 계정 하나씩 순차 실행 — 크롬 창 하나만 뜨게. 계정이 많아 하루 세션이 부족하면 간격을 줄일 것.
+  setInterval(() => {
+    if (autoRunning || warmupBusy != null) return;
+    const h = new Date().getHours();
+    if (h < 8 || h >= 23) return;
+    const rows = db()
+      .prepare("SELECT id FROM accounts WHERE warmup_until IS NOT NULL AND status='active' AND proxy_host IS NOT NULL")
+      .all() as any[];
+    const now = Date.now();
+    for (const r of rows) {
+      if (!inWarmup(r.id)) {
+        // 기간 끝 → 투입 가능으로 전환
+        const a = db().prepare('SELECT naver_id FROM accounts WHERE id=?').get([r.id]) as any;
+        db().prepare('UPDATE accounts SET warmup_until=NULL WHERE id=?').run([r.id]);
+        pushLog(`✅ [${a?.naver_id}] 워밍업 기간 종료 — 이제 답변에 투입됩니다`);
+        continue;
+      }
+      // 처음 등록된 계정은 2~15분 뒤 첫 세션
+      if (!warmupNextAt.has(r.id)) warmupNextAt.set(r.id, now + (2 + Math.random() * 13) * 60 * 1000);
+      if (warmupNextAt.get(r.id)! <= now) {
+        runWarmupOnce(r.id).catch(() => {});
+        return;
+      }
+    }
+  }, 3 * 60 * 1000);
+
+  ipcMain.handle('accounts:warmupNow', (_e, id: number) => runWarmupOnce(id));
 
   const sleepRnd = (a: number, b: number) =>
     new Promise((r) => setTimeout(r, a + Math.floor(Math.random() * (b - a))));
@@ -887,6 +969,7 @@ export function registerIpc(ipcMain: IpcMain) {
       opts: { accountId?: number; accountIds?: number[]; submit: boolean; brandId?: number; useCollected?: boolean },
     ) => {
     if (autoRunning) return { ok: false, error: '이미 실행 중입니다.' };
+    if (warmupBusy != null) return { ok: false, error: '워밍업 세션이 진행 중입니다. 몇 분 뒤 다시 시작하세요.' };
     // 여러 계정(교대) 또는 단일 계정 모두 지원
     const rawIds =
       opts.accountIds && opts.accountIds.length
@@ -904,13 +987,20 @@ export function registerIpc(ipcMain: IpcMain) {
     if (!proxied.length) {
       return { ok: false, error: '프록시 없는 계정은 완전자동을 실행할 수 없습니다.' };
     }
+    // 워밍업 중인 계정은 답변에 투입하지 않는다 (읽기 이력만 쌓는 기간)
+    const ready = proxied.filter((a) => !inWarmup(a.id));
+    const warming = proxied.length - ready.length;
+    if (!ready.length) {
+      return { ok: false, error: '선택한 계정이 모두 워밍업 중입니다. 워밍업이 끝나면(계정·프록시 탭) 투입됩니다.' };
+    }
     const skipped = accs.length - proxied.length;
-    const useIds = proxied.map((a) => a.id as number);
+    const useIds = ready.map((a) => a.id as number);
     autoRunning = true;
     autoStop = false;
     autoCount = 0;
     pushLog(useIds.length > 1 ? `시작 중… (${useIds.length}개 계정 교대)` : '시작 중…');
     if (skipped) pushLog(`⚠ 프록시 없는 계정 ${skipped}개는 제외했습니다`);
+    if (warming) pushLog(`워밍업 중인 계정 ${warming}개는 답변에서 제외했습니다`);
     runAutopilot(useIds, opts.submit, opts.brandId, opts.useCollected)
       .catch((e) => {
         pushLog('오류: ' + (e instanceof Error ? e.message : String(e)));

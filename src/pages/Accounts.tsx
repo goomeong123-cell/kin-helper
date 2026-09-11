@@ -200,6 +200,27 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
   }
 
   const hasProxy = !!(account.proxy_host && account.proxy_port);
+  // 워밍업: 답변 없이 지식인만 읽는 기간. 끝나면 자동으로 답변에 투입된다.
+  const warmupEnd = account.warmup_until ? new Date(account.warmup_until).getTime() : 0;
+  const warming = warmupEnd > Date.now();
+  const warmupDaysLeft = warming ? Math.ceil((warmupEnd - Date.now()) / 86400000) : 0;
+  const [warmingNow, setWarmingNow] = useState(false);
+
+  async function setWarmup(days: number | null) {
+    const until = days ? new Date(Date.now() + days * 86400000).toISOString() : '';
+    await window.api.accounts.update(account.id, { warmup_until: until });
+    onChange();
+    toast(days ? `워밍업 ${days}일 시작 — 이 기간엔 답변하지 않고 읽기만 합니다` : '워밍업 종료 — 답변에 투입됩니다');
+  }
+  async function warmupNow() {
+    setWarmingNow(true);
+    try {
+      const r = await window.api.accounts.warmupNow(account.id);
+      toast(r.ok ? '워밍업 세션 완료' : r.error || '워밍업 실패');
+    } finally {
+      setWarmingNow(false);
+    }
+  }
 
   if (!edit) {
     return (
@@ -212,6 +233,11 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
                 {STATUS_LABEL[account.status]}
               </span>
               {!hasProxy && <span className="badge red">프록시 없음 · 로그인 차단</span>}
+              {warming && (
+                <span className="badge amber" title="답변 없이 지식인만 읽는 기간. 끝나면 자동으로 답변에 투입됩니다">
+                  워밍업 중 · {warmupDaysLeft}일 남음
+                </span>
+              )}
             </div>
             <div className="muted" style={{ fontSize: 13 }}>
               프록시:{' '}
@@ -340,6 +366,30 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
             >
               브라우저 열기
             </button>
+            {warming ? (
+              <>
+                <button
+                  className="btn sm"
+                  onClick={warmupNow}
+                  disabled={!hasProxy || warmingNow}
+                  title="지금 바로 워밍업 세션 한 번 (3~6분 읽기만). 평소엔 08~23시에 90~180분마다 자동으로 돕니다"
+                >
+                  {warmingNow ? '읽는 중…' : '지금 한 번'}
+                </button>
+                <button className="btn sm" onClick={() => setWarmup(null)} title="워밍업을 끝내고 바로 답변에 투입">
+                  워밍업 종료
+                </button>
+              </>
+            ) : (
+              <button
+                className="btn sm"
+                onClick={() => setWarmup(3)}
+                disabled={!hasProxy}
+                title="3일간 답변 없이 지식인만 자동으로 읽습니다(로그인한 이 계정 크롬으로, 08~23시 90~180분마다). 끝나면 자동 투입"
+              >
+                워밍업 3일
+              </button>
+            )}
             <button className="btn sm" onClick={() => setEdit(true)}>
               {hasProxy ? '수정' : '프록시 등록'}
             </button>

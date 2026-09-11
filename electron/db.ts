@@ -170,4 +170,5 @@ function migrate() {
   };
   addCol('questions', 'asked_at', 'TEXT');
   addCol('brands', 'exclude_keywords', 'TEXT'); // 브랜드별 제외 키워드(줄바꿈/쉼표 구분) — 제목에 포함 시 수집·발행 제외
+  addCol('accounts', 'warmup_until', 'TEXT'); // 워밍업 종료 시각(ISO). 미래면 워밍업 중 → 답변 안 함
 }
