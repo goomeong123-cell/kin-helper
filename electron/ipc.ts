@@ -33,6 +33,8 @@ import {
   pwAnswerQuestion,
   pwCheckBrowserExitIp,
   pwDetectSuspension,
+  pwOpenQuestion,
+  pwReadOpenQuestion,
 } from './pwkin';
 
 const DEFAULT_DAILY_PROMPT =
@@ -543,6 +545,8 @@ export function registerIpc(ipcMain: IpcMain) {
     includePromo?: boolean,
     // 질문 상세를 읽을 때 쓸 프록시 (없으면 프록시 없이 나가 VM 실제 IP가 노출되므로 가급적 전달)
     detailProxy?: AccountProxy,
+    // 크롬에서 이미 읽어둔 질문 내용. 있으면 별도 요청을 만들지 않는다(브라우저와 다른 지문의 요청 방지)
+    preloaded?: { title?: string; body?: string },
   ) {
     const q = db().prepare('SELECT * FROM questions WHERE id = ?').get([questionId]) as any;
     if (!q) return { ok: false, error: '질문을 찾을 수 없습니다.' };
@@ -567,7 +571,7 @@ export function registerIpc(ipcMain: IpcMain) {
     let questionTitle = q.title;
     let questionBody = q.content || '';
     try {
-      const detail = await fetchQuestionDetail(q.url, detailProxy);
+      const detail = preloaded ?? (await fetchQuestionDetail(q.url, detailProxy));
       if (detail.title) questionTitle = detail.title;
       if (detail.body && detail.body.length > questionBody.length) questionBody = detail.body;
     } catch {
@@ -1114,17 +1118,24 @@ export function registerIpc(ipcMain: IpcMain) {
         targetTitle = fresh.title;
       }
 
-      // 질문 본문을 실제로 가져왔는지 확인해 로그에 남김
-      try {
-        const d = await fetchQuestionDetail(targetUrl, accountToProxy(acc));
+      // 질문은 '열려 있는 크롬 탭'에서 읽는다 (별도 요청 없음 — 브라우저와 다른 지문의 요청이 섞이지 않게).
+      // 수집 발행처럼 아직 안 열렸으면 여기서 연다. 이미 열려 있으면 그대로.
+      let preloaded: { title?: string; body?: string } = {};
+      if (kinCtx) {
+        await pwOpenQuestion(kinCtx, targetUrl).catch(() => {});
+        preloaded = await pwReadOpenQuestion(kinCtx);
         pushLog(
-          `질문 확인: 제목 ${(d.title || targetTitle || '').length}자 / 본문 ${(d.body || '').length}자`,
+          `질문 확인: 제목 ${(preloaded.title || targetTitle || '').length}자 / 본문 ${(preloaded.body || '').length}자`,
         );
-      } catch {
-        // ignore
       }
       pushLog(`답변 생성 중: ${String(targetTitle).slice(0, 24)}`);
-      const gen = (await doGenerate(qrow.id, brandId, isPromo, accountToProxy(acc))) as any;
+      const gen = (await doGenerate(
+        qrow.id,
+        brandId,
+        isPromo,
+        accountToProxy(acc),
+        preloaded.title || preloaded.body ? preloaded : undefined,
+      )) as any;
       if (!gen.ok || !gen.answer) {
         pushLog('생성 실패 — 다음');
         await sleepRnd(5000, 10000);

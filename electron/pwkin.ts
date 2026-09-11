@@ -461,3 +461,33 @@ export async function pwDetectSuspension(ctx: BrowserContext): Promise<string | 
   }
   return null;
 }
+
+/** 질문 탭이 아직 열려 있지 않으면 연다. 이미 그 질문이면 아무것도 안 한다. */
+export async function pwOpenQuestion(ctx: BrowserContext, url: string): Promise<void> {
+  const page = await activePage(ctx);
+  const want = (/docId=(\d+)/.exec(url) || [])[1];
+  if (want && page.url().includes(`docId=${want}`)) return;
+  await page.goto(normalizeKinUrl(url), { waitUntil: 'domcontentloaded', timeout: 40000 }).catch(() => {});
+  await human(1200, 2200);
+}
+
+/**
+ * 이미 열려 있는 질문 탭에서 제목·본문을 읽는다.
+ * ★ 별도 네트워크 요청을 만들지 않는다 — 같은 IP에서 브라우저와 다른 UA/TLS 지문의 요청이
+ *   섞이면 그 자체가 흔적이다. 사람이 열어둔 페이지를 읽는 것과 동일.
+ */
+export async function pwReadOpenQuestion(ctx: BrowserContext): Promise<{ title?: string; body?: string }> {
+  try {
+    const page = await activePage(ctx);
+    const r = (await page.evaluate(`(function () {
+      var m = function (sel) { var e = document.querySelector(sel); return e ? (e.getAttribute('content') || '') : ''; };
+      var title = m('meta[property="og:title"]') || document.title || '';
+      var cands = [m('meta[name="description"]'), m('meta[property="og:description"]')].filter(Boolean);
+      var body = cands.sort(function (a, b) { return b.length - a.length; })[0] || '';
+      return { title: title.trim(), body: body.trim() };
+    })()`)) as { title: string; body: string };
+    return { title: r.title || undefined, body: r.body || undefined };
+  } catch {
+    return {};
+  }
+}

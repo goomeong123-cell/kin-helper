@@ -107,29 +107,29 @@ export async function applyStealthInit(
   acc: AccountProxy,
 ): Promise<void> {
   const fp = deriveFingerprint(acc.naverId || String(acc.id));
-  await ctx.addInitScript(() => {
-    try {
-      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-    } catch {
-      /* ignore */
-    }
-    try {
-      Object.defineProperty(navigator, 'languages', { get: () => ['ko-KR', 'ko', 'en'] });
-    } catch {
-      /* ignore */
-    }
-  });
   await ctx.addInitScript((f: DerivedFp) => {
-    try { Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => f.cores }); } catch { /* ignore */ }
-    try { Object.defineProperty(navigator, 'deviceMemory', { get: () => f.memory }); } catch { /* ignore */ }
-    const sd: Record<string, number> = {
-      width: f.screenW, height: f.screenH,
-      availWidth: f.screenW, availHeight: f.screenH - 40,
-      colorDepth: 24, pixelDepth: 24,
+    // ★ 반드시 '프로토타입'에 정의한다.
+    //   navigator/screen 인스턴스에 own property 로 두면 Object.getOwnPropertyNames()로
+    //   위장이 그대로 드러난다(진짜 크롬은 둘 다 []). 실측으로 확인된 흔적.
+    const def = (proto: any, key: string, value: unknown) => {
+      try {
+        Object.defineProperty(proto, key, { get: () => value, configurable: true, enumerable: true });
+      } catch {
+        /* ignore */
+      }
     };
-    for (const k of Object.keys(sd)) {
-      try { Object.defineProperty((globalThis as any).screen, k, { get: () => sd[k] }); } catch { /* ignore */ }
-    }
+    const navProto = Object.getPrototypeOf(navigator);
+    def(navProto, 'webdriver', false); // Playwright가 true로 심는다 → 진짜 크롬 값 false
+    def(navProto, 'languages', ['ko-KR', 'ko']);
+    def(navProto, 'hardwareConcurrency', f.cores);
+    def(navProto, 'deviceMemory', f.memory);
+    const scrProto = Object.getPrototypeOf((globalThis as any).screen);
+    def(scrProto, 'width', f.screenW);
+    def(scrProto, 'height', f.screenH);
+    def(scrProto, 'availWidth', f.screenW);
+    def(scrProto, 'availHeight', f.screenH - 40);
+    def(scrProto, 'colorDepth', 24);
+    def(scrProto, 'pixelDepth', 24);
   }, fp);
 }
 
