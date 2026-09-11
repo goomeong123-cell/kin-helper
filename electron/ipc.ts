@@ -35,6 +35,7 @@ import {
   pwDetectSuspension,
   pwOpenQuestion,
   pwReadOpenQuestion,
+  pwFingerprintDiag,
 } from './pwkin';
 
 const DEFAULT_DAILY_PROMPT =
@@ -326,6 +327,25 @@ export function registerIpc(ipcMain: IpcMain) {
       ok: true, ips: r.ips, distinct: r.distinct, stable: r.stable,
       anonymous: r.anonymous, leakHeaders: r.leakHeaders, clockSkewSec: r.clockSkewSec,
     };
+  });
+
+  // 이 계정의 '실제 크롬'이 네이버에 보여주는 기기 지문을 측정 (읽기 전용 — 위장 아님)
+  ipcMain.handle('accounts:fingerprint', async (_e, id: number) => {
+    const a = db().prepare('SELECT * FROM accounts WHERE id = ?').get([id]) as any;
+    if (!a) return { ok: false, error: '계정을 찾을 수 없습니다.' };
+    if (!a.proxy_host || !a.proxy_port) return { ok: false, error: '프록시를 먼저 등록하세요.' };
+    try {
+      pushLog(`[${a.naver_id}] 기기 지문 측정 중… (약 10초)`);
+      const ctx = await getAccountContext(accountToProxy(a));
+      const fp = await pwFingerprintDiag(ctx);
+      pushLog(
+        `[${a.naver_id}] 지문: GPU="${fp.webglRenderer.slice(0, 60)}" ${fp.vmLike ? '⚠ VM/소프트웨어 GPU 의심' : '(실제 GPU)'} · 코어 ${fp.cores} · 메모리 ${fp.memory}GB · 화면 ${fp.screen} · 해시 ${fp.fingerprintHash}` +
+          (fp.webrtcLeak ? ` · ⚠ WebRTC 누수: ${fp.leakedPublicIps.join(',')}` : ' · WebRTC 누수 없음 ✓'),
+      );
+      return { ok: true, ...fp };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
   });
 
   // 계정 전용 크롬을 그냥 열어보기 (프로필 설정·둘러보기·워밍업용).

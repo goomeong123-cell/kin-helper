@@ -110,6 +110,11 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
     clockSkewSec?: number | null;
   } | null>(null);
   const [checkingIp, setCheckingIp] = useState(false);
+  const [fpInfo, setFpInfo] = useState<{
+    webglRenderer: string; vmLike: boolean; cores: number | null; memory: number | null;
+    screen: string; canvasHash: string; fingerprintHash: string; webrtcLeak: boolean; leakedPublicIps: string[];
+  } | null>(null);
+  const [checkingFp, setCheckingFp] = useState(false);
   const [f, setF] = useState({
     naver_id: account.naver_id,
     memo: account.memo || '',
@@ -158,6 +163,27 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
     }
   }
 
+  // 이 계정의 실제 크롬이 네이버에 보여주는 기기 지문 (읽기 전용). GPU가 VM처럼 보이는지 확인용.
+  async function checkFp() {
+    setCheckingFp(true);
+    setFpInfo(null);
+    try {
+      const r = await window.api.accounts.fingerprint(account.id);
+      if (!r.ok) {
+        toast(r.error || '지문 측정 실패');
+        return;
+      }
+      setFpInfo({
+        webglRenderer: r.webglRenderer || '', vmLike: !!r.vmLike, cores: r.cores ?? null, memory: r.memory ?? null,
+        screen: r.screen || '', canvasHash: r.canvasHash || '', fingerprintHash: r.fingerprintHash || '',
+        webrtcLeak: !!r.webrtcLeak, leakedPublicIps: r.leakedPublicIps || [],
+      });
+      toast(r.vmLike ? '⚠ GPU가 VM/소프트웨어 렌더러로 잡힙니다' : '기기 지문 측정 완료');
+    } finally {
+      setCheckingFp(false);
+    }
+  }
+
   // 진짜 Chrome 창을 연다. 로그인하든 그냥 둘러보든, 창을 닫으면 세션이 저장된다.
   async function openChrome(mode: 'login' | 'browse') {
     setLoggingIn(true);
@@ -196,6 +222,39 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
               )}
               {' · '}일일 한도 {account.daily_limit}건{account.memo ? ` · ${account.memo}` : ''}
             </div>
+            {fpInfo && (
+              <div
+                style={{
+                  fontSize: 12.5,
+                  lineHeight: 1.6,
+                  color: fpInfo.vmLike || fpInfo.webrtcLeak ? 'var(--red, #e5484d)' : 'var(--text-sub)',
+                  background: fpInfo.vmLike || fpInfo.webrtcLeak ? 'rgba(229,72,77,0.07)' : 'var(--bg-soft)',
+                  border: `1px solid ${fpInfo.vmLike || fpInfo.webrtcLeak ? 'rgba(229,72,77,0.18)' : 'var(--border)'}`,
+                  borderRadius: 8,
+                  padding: '6px 10px',
+                  wordBreak: 'break-all',
+                }}
+              >
+                GPU: <b>{fpInfo.webglRenderer || '(없음)'}</b>
+                {fpInfo.vmLike ? (
+                  <>
+                    <br />⚠ <b>VM/소프트웨어 GPU로 잡힙니다.</b> 이건 위장으로 고칠 게 아니라 환경 문제입니다(GPU 없는 VM).
+                    같은 VM의 카페포스터 계정이 살아있다면 네이버가 이 정도는 허용한다는 뜻이니 우선 지켜보세요.
+                  </>
+                ) : (
+                  ' · 실제 GPU ✓'
+                )}
+                <br />
+                코어 {fpInfo.cores ?? '?'} · 메모리 {fpInfo.memory ?? '?'}GB · 화면 {fpInfo.screen} · 캔버스 {fpInfo.canvasHash} ·{' '}
+                지문 해시 <b>{fpInfo.fingerprintHash}</b>
+                <span className="muted"> (계정마다 달라야 정상)</span>
+                {fpInfo.webrtcLeak && (
+                  <>
+                    <br />⚠ WebRTC로 프록시 밖 IP가 보입니다: {fpInfo.leakedPublicIps.join(', ')}
+                  </>
+                )}
+              </div>
+            )}
             {ipInfo && (
               <div
                 style={{
@@ -264,6 +323,14 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
               title="프록시로 나가는 IP가 고정인지 확인합니다. IP가 바뀌면 네이버가 로그인을 끊습니다"
             >
               {checkingIp ? '진단 중…' : '프록시 진단'}
+            </button>
+            <button
+              className="btn sm"
+              onClick={checkFp}
+              disabled={!hasProxy || checkingFp}
+              title="이 계정의 실제 크롬이 네이버에 보여주는 GPU·화면·캔버스 지문을 측정합니다 (위장 아님, 읽기 전용)"
+            >
+              {checkingFp ? '측정 중…' : '지문 진단'}
             </button>
             <button
               className="btn sm"

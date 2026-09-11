@@ -491,3 +491,93 @@ export async function pwReadOpenQuestion(ctx: BrowserContext): Promise<{ title?:
     return {};
   }
 }
+
+export interface FingerprintDiag {
+  proxyIp: string;
+  ua: string; platform: string; cores: number | null; memory: number | null;
+  screen: string; timezone: string; languages: string;
+  webglVendor: string; webglRenderer: string; canvasHash: string;
+  webrtcIps: string[]; leakedPublicIps: string[]; webrtcLeak: boolean;
+  /** 렌더러 문자열이 VM/소프트웨어 GPU 처럼 보이는가 (SwiftShader, Basic Render Driver, VMware 등) */
+  vmLike: boolean;
+  /** 계정 간 비교용 요약 해시 — 계정마다 달라야 한다 */
+  fingerprintHash: string;
+}
+
+/**
+ * 이 계정의 '실제 크롬'이 네이버에 보여주는 기기 지문을 측정한다 (읽기 전용, 위장 없음).
+ * 카페포스터 diagnostic:fingerprint 와 동일한 측정. GPU/캔버스는 위장 대상이 아니라 확인 대상.
+ */
+export async function pwFingerprintDiag(ctx: BrowserContext): Promise<FingerprintDiag> {
+  const page = await ctx.newPage();
+  try {
+    let proxyIp = '';
+    try {
+      await page.goto('https://api.ipify.org?format=json', { waitUntil: 'domcontentloaded', timeout: 20000 });
+      const txt = String(await page.evaluate('document.body ? document.body.innerText : ""')).trim();
+      try { proxyIp = JSON.parse(txt).ip; } catch { proxyIp = txt; }
+    } catch { /* ignore */ }
+
+    const fp = (await page.evaluate(`(async function () {
+      var nav = navigator, scr = screen;
+      var canvasHash = '';
+      try {
+        var c = document.createElement('canvas'); var g = c.getContext('2d');
+        g.textBaseline = 'top'; g.font = "14px 'Arial'";
+        g.fillStyle = '#f60'; g.fillRect(10, 1, 60, 20);
+        g.fillStyle = '#069'; g.fillText('kin-fp-9620', 2, 15);
+        var data = c.toDataURL(); var h = 0;
+        for (var i = 0; i < data.length; i++) { h = (h * 31 + data.charCodeAt(i)) | 0; }
+        canvasHash = (h >>> 0).toString(16);
+      } catch (e) {}
+      var webglVendor = '', webglRenderer = '';
+      try {
+        var gc = document.createElement('canvas');
+        var gl = gc.getContext('webgl') || gc.getContext('experimental-webgl');
+        if (gl) {
+          var dbg = gl.getExtension('WEBGL_debug_renderer_info');
+          webglVendor = dbg ? gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) : gl.getParameter(gl.VENDOR);
+          webglRenderer = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+        }
+      } catch (e) {}
+      var webrtcIps = await new Promise(function (resolve) {
+        var found = new Set(); var pc = null;
+        try {
+          pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+          pc.createDataChannel('d');
+          pc.onicecandidate = function (e) {
+            if (!e || !e.candidate) return;
+            var cand = String(e.candidate.candidate || '');
+            var m = cand.match(/([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})/);
+            if (m && !/\.local/i.test(cand)) found.add(m[1]);
+          };
+          pc.createOffer().then(function (o) { return pc.setLocalDescription(o); }).catch(function () {});
+        } catch (e) {}
+        setTimeout(function () { try { pc && pc.close(); } catch (e) {} resolve(Array.from(found)); }, 3500);
+      });
+      return {
+        ua: nav.userAgent, platform: nav.platform,
+        cores: nav.hardwareConcurrency == null ? null : nav.hardwareConcurrency,
+        memory: nav.deviceMemory == null ? null : nav.deviceMemory,
+        screen: scr.width + 'x' + scr.height + 'x' + scr.colorDepth,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        languages: (nav.languages || []).join(','),
+        webglVendor: String(webglVendor || ''), webglRenderer: String(webglRenderer || ''),
+        canvasHash: canvasHash, webrtcIps: webrtcIps,
+      };
+    })()`)) as Omit<FingerprintDiag, 'proxyIp' | 'leakedPublicIps' | 'webrtcLeak' | 'vmLike' | 'fingerprintHash'>;
+
+    const isPublic = (ip: string) =>
+      !!ip && !/^10\./.test(ip) && !/^192\.168\./.test(ip) &&
+      !/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(ip) && !/^169\.254\./.test(ip) && !/^127\./.test(ip);
+    const leakedPublicIps = (fp.webrtcIps || []).filter((ip) => isPublic(ip) && ip !== proxyIp);
+    const vmLike = /swiftshader|basic render|vmware|virtualbox|llvmpipe|mesa|parallels|hyper-v|virtio|qxl|remotefx/i
+      .test(fp.webglRenderer + ' ' + fp.webglVendor);
+    const fpString = [fp.ua, fp.platform, fp.cores, fp.memory, fp.screen, fp.timezone, fp.languages, fp.webglRenderer, fp.canvasHash].join('|');
+    let fh = 0;
+    for (let i = 0; i < fpString.length; i++) fh = (fh * 31 + fpString.charCodeAt(i)) | 0;
+    return { proxyIp, ...fp, leakedPublicIps, webrtcLeak: leakedPublicIps.length > 0, vmLike, fingerprintHash: (fh >>> 0).toString(16) };
+  } finally {
+    await page.close().catch(() => {});
+  }
+}
