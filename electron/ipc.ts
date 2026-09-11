@@ -864,12 +864,11 @@ export function registerIpc(ipcMain: IpcMain) {
     if (!a.proxy_host || !a.proxy_port) return { ok: false, error: '프록시가 없는 계정은 워밍업하지 않습니다.' };
     warmupBusy = accountId;
     try {
-      pushLog(`[${a.naver_id}] 워밍업 세션 시작 (읽기만)`);
       const ctx = await getAccountContext(accountToProxy(a));
-      if (!(await pwIsLoggedIn(ctx))) {
-        pushLog(`⚠ [${a.naver_id}] 로그인 안 됨 — 워밍업 건너뜀 (계정·프록시 탭에서 로그인하세요)`);
-        return { ok: false, error: '로그인 안 됨' };
-      }
+      // 로그인 전에도 돈다: 브라우저·IP에 방문 흔적(NNB 등)을 먼저 쌓아 '아는 기기에서의 로그인'에 가깝게.
+      // 로그인 후에는 계정 자체의 읽기 이력이 쌓인다. 둘 다 답변은 하지 않는다.
+      const logged = await pwIsLoggedIn(ctx);
+      pushLog(`[${a.naver_id}] ${logged ? '로그인' : '비로그인'} 워밍업 세션 시작 (읽기만)`);
       const r = await runWarmupSession(ctx, (s) => pushLog(`[${a.naver_id}] 워밍업 · ${s}`));
       if (r.suspended) {
         db().prepare("UPDATE accounts SET status='suspect', warmup_until=NULL WHERE id=?").run([accountId]);

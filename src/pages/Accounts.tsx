@@ -385,7 +385,7 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
                 className="btn sm"
                 onClick={() => setWarmup(3)}
                 disabled={!hasProxy}
-                title="3일간 답변 없이 지식인만 자동으로 읽습니다(로그인한 이 계정 크롬으로, 08~23시 90~180분마다). 끝나면 자동 투입"
+                title="3일간 답변 없이 지식인만 자동으로 읽습니다(이 계정 크롬·프록시로, 08~23시 90~180분마다). 로그인 전에 시작해도 됩니다 — 반나절~1일 읽은 뒤 로그인하면 '아는 기기' 로그인에 가까워집니다. 끝나면 자동 투입"
               >
                 워밍업 3일
               </button>
