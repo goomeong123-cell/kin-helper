@@ -58,7 +58,7 @@ export default function Settings() {
       </div>
 
       <div className="card">
-        <label className="label">Claude API 키</label>
+        <label className="section-title">Claude API 키</label>
         <input
           className="field"
           type="password"
@@ -80,7 +80,7 @@ export default function Settings() {
       </div>
 
       <div className="card">
-        <label className="label">홍보 답변 비율</label>
+        <label className="section-title">홍보 답변 비율</label>
         <div className="page-sub" style={{ marginBottom: 14 }}>
           전체 답변 중 홍보 답변을 섞을 비율입니다. 나머지는 일상(순수 도움) 답변으로 생성됩니다.
           <br />
@@ -108,7 +108,7 @@ export default function Settings() {
       </div>
 
       <div className="card">
-        <label className="label">완전자동 답변 간격</label>
+        <label className="section-title">완전자동 답변 간격</label>
         <div className="page-sub" style={{ marginBottom: 12 }}>
           답변 등록 후 다음 질문까지 기다리는 시간입니다. 이 범위 안에서 <b>매번 랜덤</b>으로 정해집니다(사람처럼 일정하지 않게).
           <br />
@@ -144,7 +144,7 @@ export default function Settings() {
       </div>
 
       <div className="card">
-        <label className="label">스캔 페이지 수</label>
+        <label className="section-title">스캔 페이지 수</label>
         <div className="page-sub" style={{ marginBottom: 12 }}>
           질문을 찾을 때 목록 <b>하단의 페이지 번호(1,2,3…)를 눌러가며</b> 몇 페이지까지 훑을지 정합니다.
           <br />
@@ -162,7 +162,7 @@ export default function Settings() {
       </div>
 
       <div className="card">
-        <label className="label">일상글 프롬프트 (공통)</label>
+        <label className="section-title">일상글 프롬프트 (공통)</label>
         <div className="page-sub" style={{ marginBottom: 8 }}>
           홍보 없이 순수하게 도움만 주는 일반 답변에 쓰입니다. 사람 말투·자연스러움이 핵심입니다.
         </div>

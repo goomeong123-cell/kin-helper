@@ -156,7 +156,7 @@ function BrandEditor({ brand, onChange }: { brand: Brand; onChange: () => void }
   return (
     <>
       <div className="card">
-        <label className="label">홍보용 프롬프트 (이 브랜드 전용)</label>
+        <label className="section-title">홍보용 프롬프트 (이 브랜드 전용)</label>
         <div className="page-sub" style={{ marginBottom: 8 }}>
           이 브랜드로 홍보 답변을 쓸 때 Claude에게 주는 지시문입니다. <b>어떤 제품을 어떻게 홍보할지 여기에 직접 적으세요.</b>
           <br />
@@ -218,7 +218,7 @@ function BrandEditor({ brand, onChange }: { brand: Brand; onChange: () => void }
       </div>
 
       <div className="card">
-        <label className="label">🧪 프롬프트 테스트</label>
+        <label className="section-title">프롬프트 테스트</label>
         <div className="page-sub" style={{ marginBottom: 10 }}>
           위 홍보용 프롬프트로 <b>실제 어떤 답변이 나오는지</b> 미리 확인합니다. 지식인에 등록되지 않으니 마음껏 테스트하세요.
           <br />
@@ -260,7 +260,7 @@ function BrandEditor({ brand, onChange }: { brand: Brand; onChange: () => void }
       </div>
 
       <div className="card">
-        <label className="label">노출·검색 키워드</label>
+        <label className="section-title">노출·검색 키워드</label>
         <div className="page-sub" style={{ marginBottom: 10 }}>
           이 키워드로 지식인에서 질문을 수집합니다.
         </div>
@@ -268,8 +268,15 @@ function BrandEditor({ brand, onChange }: { brand: Brand; onChange: () => void }
           {keywords.map((k) => (
             <span key={k.id} className="badge blue" style={{ display: 'inline-flex', gap: 6 }}>
               {k.keyword}
-              <button className="btn ghost" style={{ padding: 0, color: 'inherit' }} onClick={() => removeKw(k.id)}>
-                ✕
+              <button
+                className="btn ghost"
+                style={{ padding: 0, color: 'inherit', width: 16, height: 16, borderRadius: 999 }}
+                onClick={() => removeKw(k.id)}
+                aria-label={`${k.keyword} 삭제`}
+              >
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round">
+                  <path d="M6 6l12 12M18 6 6 18" />
+                </svg>
               </button>
             </span>
           ))}

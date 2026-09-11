@@ -8,12 +8,47 @@ import Settings from './pages/Settings';
 
 type Page = 'questions' | 'brands' | 'accounts' | 'history' | 'settings';
 
-const NAV: { key: Page; label: string; ico: string }[] = [
-  { key: 'questions', label: '질문·답변', ico: '📥' },
-  { key: 'brands', label: '브랜드·제품', ico: '🏷️' },
-  { key: 'accounts', label: '계정·프록시', ico: '👤' },
-  { key: 'history', label: '답변 이력', ico: '🕘' },
-  { key: 'settings', label: '설정', ico: '⚙️' },
+// 아이콘은 한 벌로 그린 선 아이콘 (동일 굵기·크기)
+const I = {
+  questions: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v8A2.5 2.5 0 0 1 17.5 16H10l-5 4v-4H6.5A2.5 2.5 0 0 1 4 13.5z" />
+      <path d="M9 9.5h6M9 12.5h4" />
+    </svg>
+  ),
+  brands: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3.5 12.2V5.5a2 2 0 0 1 2-2h6.7a2 2 0 0 1 1.4.6l6.9 6.9a2 2 0 0 1 0 2.8l-6.7 6.7a2 2 0 0 1-2.8 0l-6.9-6.9a2 2 0 0 1-.6-1.4z" />
+      <circle cx="8.5" cy="8.5" r="1.4" />
+    </svg>
+  ),
+  accounts: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="8" r="4" />
+      <path d="M4.5 20.5c.8-3.6 3.8-5.5 7.5-5.5s6.7 1.9 7.5 5.5" />
+    </svg>
+  ),
+  history: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3.5 12a8.5 8.5 0 1 0 2.5-6" />
+      <path d="M3.5 3.5v4.5H8M12 7.5V12l3 2" />
+    </svg>
+  ),
+  settings: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 7h10M18 7h2M4 17h4M12 17h8" />
+      <circle cx="16" cy="7" r="2.5" />
+      <circle cx="10" cy="17" r="2.5" />
+    </svg>
+  ),
+};
+
+const NAV: { key: Page; label: string; ico: JSX.Element }[] = [
+  { key: 'questions', label: '질문·답변', ico: I.questions },
+  { key: 'brands', label: '브랜드·제품', ico: I.brands },
+  { key: 'accounts', label: '계정·프록시', ico: I.accounts },
+  { key: 'history', label: '답변 이력', ico: I.history },
+  { key: 'settings', label: '설정', ico: I.settings },
 ];
 
 export default function App() {
@@ -62,7 +97,14 @@ export default function App() {
     <ToastProvider>
       <div className="app">
         <aside className="sidebar">
-          <div className="logo">지식인 헬퍼</div>
+          <div className="logo">
+            <span className="mark" aria-hidden="true">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-7l-5 4v-4H6a2 2 0 0 1-2-2z" />
+              </svg>
+            </span>
+            지식인 헬퍼
+          </div>
           {NAV.map((n) => (
             <button
               key={n.key}
@@ -73,34 +115,18 @@ export default function App() {
               {n.label}
             </button>
           ))}
-          <div style={{ marginTop: 'auto', padding: '10px 12px' }}>
-            <div style={{ fontSize: 12, color: 'var(--text-mute)', fontWeight: 700 }}>
-              {version ? `ver ${version}` : ''}
-            </div>
-            {updText && (
-              <div style={{ fontSize: 11, color: 'var(--text-sub)', marginTop: 4, lineHeight: 1.4 }}>
-                {updText}
-              </div>
+          <div className="sidebar-foot">
+            <div className="ver">{version ? `ver ${version}` : ''}</div>
+            {updText && <div className="upd">{updText}</div>}
+            {upd.status === 'downloaded' ? (
+              <button className="btn sm primary" onClick={() => window.api.update.install()}>
+                지금 설치
+              </button>
+            ) : (
+              <button className="btn sm" onClick={() => window.api.update.check().then(setUpd)}>
+                업데이트 확인
+              </button>
             )}
-            <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
-              {upd.status === 'downloaded' ? (
-                <button
-                  className="btn sm primary"
-                  style={{ fontSize: 11, padding: '5px 10px' }}
-                  onClick={() => window.api.update.install()}
-                >
-                  지금 설치
-                </button>
-              ) : (
-                <button
-                  className="btn sm"
-                  style={{ fontSize: 11, padding: '5px 10px' }}
-                  onClick={() => window.api.update.check().then(setUpd)}
-                >
-                  업데이트 확인
-                </button>
-              )}
-            </div>
           </div>
         </aside>
         <main className="main">

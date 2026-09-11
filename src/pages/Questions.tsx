@@ -265,7 +265,7 @@ export default function Questions() {
           <div className="page-title">질문·답변</div>
           <div className="page-sub">답변 대기 질문을 수집하고, 자연스러운 답변을 만들어 등록합니다.</div>
         </div>
-        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+        <div className="btn-group" style={{ alignItems: 'center', gap: 10 }}>
           <div
             style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
             title="이번에 수집할 질문 개수. '전체' 탭이면 브랜드별로 나눠서 수집합니다."
@@ -360,10 +360,10 @@ export default function Questions() {
           <div>
             <div className="segmented" style={{ marginBottom: 8 }}>
               <button className={autoTab === 'full' ? 'active' : ''} onClick={() => setAutoTab('full')}>
-                🤖 완전자동
+                완전자동
               </button>
               <button className={autoTab === 'collect' ? 'active' : ''} onClick={() => setAutoTab('collect')}>
-                🔍 수집 발행
+                수집 발행
               </button>
             </div>
             <div className="page-sub" style={{ marginTop: 2 }}>
@@ -420,26 +420,13 @@ export default function Questions() {
                   <label
                     key={a.id}
                     title={hasProxy ? '' : '프록시 없는 계정은 완전자동에 쓸 수 없습니다'}
-                    style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: 6,
-                      padding: '6px 12px',
-                      borderRadius: 999,
-                      border: `1.5px solid ${on ? 'var(--blue)' : 'var(--border)'}`,
-                      background: on ? 'var(--blue-soft, #eef4ff)' : 'transparent',
-                      color: hasProxy ? 'var(--text)' : 'var(--text-sub)',
-                      fontSize: 13,
-                      cursor: hasProxy && !auto.running ? 'pointer' : 'not-allowed',
-                      opacity: hasProxy ? 1 : 0.55,
-                    }}
+                    className={`chip ${on ? 'on' : ''} ${!hasProxy || auto.running ? 'off' : ''}`}
                   >
                     <input
                       type="checkbox"
                       checked={on}
                       disabled={!hasProxy || auto.running}
                       onChange={() => toggleAutoAccount(a.id)}
-                      style={{ margin: 0 }}
                     />
                     {a.naver_id}
                     {!hasProxy && ' (프록시 없음)'}
@@ -451,7 +438,7 @@ export default function Questions() {
         )}
         {auto.running && (
           <div style={{ marginTop: 14, display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span className="dot" style={{ background: 'var(--blue)' }} />
+            <span className="dot live" />
             <span style={{ fontSize: 14, fontWeight: 600 }}>{auto.status}</span>
             <span className="muted" style={{ fontSize: 13 }}>
               · 처리 {auto.count}건
@@ -464,20 +451,7 @@ export default function Questions() {
           </div>
         )}
         {auto.log.length > 0 && (
-          <div
-            style={{
-              marginTop: 12,
-              background: 'var(--bg-soft)',
-              borderRadius: 10,
-              padding: '10px 12px',
-              maxHeight: 150,
-              overflowY: 'auto',
-              fontSize: 12,
-              lineHeight: 1.7,
-              color: 'var(--text-sub)',
-              fontFamily: 'Consolas, monospace',
-            }}
-          >
+          <div className="log">
             {auto.log.map((l, i) => (
               <div key={i}>{l}</div>
             ))}

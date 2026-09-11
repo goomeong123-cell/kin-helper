@@ -51,18 +51,7 @@ export default function Accounts() {
         <div>
           <div className="page-title">계정·프록시</div>
           <div className="page-sub">네이버 ID마다 프록시 IP를 1:1로 연결합니다. 로그인은 각 계정 창에서 직접 하세요.</div>
-          <div
-            style={{
-              marginTop: 10,
-              fontSize: 13,
-              lineHeight: 1.6,
-              color: 'var(--red, #e5484d)',
-              background: 'rgba(229,72,77,0.07)',
-              border: '1px solid rgba(229,72,77,0.18)',
-              borderRadius: 10,
-              padding: '10px 12px',
-            }}
-          >
+          <div className="note danger" style={{ marginTop: 10, fontSize: 13, padding: '10px 12px' }}>
             ⚠ 로그인한 창에서 <b>메일 · 페이 · 내정보</b>는 절대 열지 마세요. 이 서비스들은 낯선 기기·IP에서
             <b> 추가 본인확인</b>을 요구하는데, 여기서 로그아웃된 것처럼 보여 재로그인을 반복하면{' '}
             <b>계정이 보호조치로 잠깁니다.</b>
@@ -70,7 +59,7 @@ export default function Accounts() {
             <b>지식인 · 웹툰 · 카페</b> 등 일반 서비스는 안전합니다. 로그인 확인용으로는 지식인을 이용하세요.
           </div>
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div className="btn-group">
           <input
             className="field"
             style={{ width: 200 }}
@@ -225,9 +214,9 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
   if (!edit) {
     return (
       <div className="card">
-        <div className="row" style={{ borderBottom: 'none', padding: 0 }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div className="row" style={{ borderBottom: 'none', padding: 0, alignItems: 'flex-start' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0, flex: '1 1 320px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
               <span style={{ fontWeight: 700, fontSize: 15.5 }}>{account.naver_id}</span>
               <span className={`badge ${STATUS_BADGE[account.status]}`}>
                 {STATUS_LABEL[account.status]}
@@ -244,23 +233,12 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
               {hasProxy ? (
                 `${account.proxy_host}:${account.proxy_port}${account.proxy_user ? ' (인증)' : ''}`
               ) : (
-                <span style={{ color: 'var(--red)' }}>연결 안 됨 (IP 노출 방지로 로그인·등록 불가)</span>
+                <span style={{ color: 'var(--red-ink)' }}>연결 안 됨 (IP 노출 방지로 로그인·등록 불가)</span>
               )}
               {' · '}일일 한도 {account.daily_limit}건{account.memo ? ` · ${account.memo}` : ''}
             </div>
             {fpInfo && (
-              <div
-                style={{
-                  fontSize: 12.5,
-                  lineHeight: 1.6,
-                  color: fpInfo.vmLike || fpInfo.webrtcLeak ? 'var(--red, #e5484d)' : 'var(--text-sub)',
-                  background: fpInfo.vmLike || fpInfo.webrtcLeak ? 'rgba(229,72,77,0.07)' : 'var(--bg-soft)',
-                  border: `1px solid ${fpInfo.vmLike || fpInfo.webrtcLeak ? 'rgba(229,72,77,0.18)' : 'var(--border)'}`,
-                  borderRadius: 8,
-                  padding: '6px 10px',
-                  wordBreak: 'break-all',
-                }}
-              >
+              <div className={`note ${fpInfo.vmLike || fpInfo.webrtcLeak ? 'danger' : ''}`}>
                 GPU: <b>{fpInfo.webglRenderer || '(없음)'}</b>
                 {fpInfo.vmLike ? (
                   <>
@@ -282,17 +260,7 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
               </div>
             )}
             {ipInfo && (
-              <div
-                style={{
-                  fontSize: 12.5,
-                  lineHeight: 1.5,
-                  color: ipInfo.stable && ipInfo.anonymous !== false ? 'var(--text-sub)' : 'var(--red, #e5484d)',
-                  background: ipInfo.stable && ipInfo.anonymous !== false ? 'var(--bg-soft)' : 'rgba(229,72,77,0.07)',
-                  border: `1px solid ${ipInfo.stable && ipInfo.anonymous !== false ? 'var(--border)' : 'rgba(229,72,77,0.18)'}`,
-                  borderRadius: 8,
-                  padding: '6px 10px',
-                }}
-              >
+              <div className={`note ${ipInfo.stable && ipInfo.anonymous !== false ? '' : 'danger'}`}>
                 {ipInfo.anonymous === false ? (
                   <>
                     ⚠ 이 프록시는 <b>자기 흔적 헤더</b>를 붙입니다 (
@@ -314,7 +282,7 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
                       (Math.abs(ipInfo.clockSkewSec) > 60 ? (
                         <>
                           <br />
-                          <span style={{ color: 'var(--red, #e5484d)' }}>
+                          <span style={{ color: 'var(--red-ink)' }}>
                             ⚠ VM 시계가 <b>{ipInfo.clockSkewSec}초</b> 어긋남 — 세션이 끊길 수 있습니다.
                             Windows 시간 동기화를 켜주세요.
                           </span>
@@ -333,7 +301,7 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
               </div>
             )}
           </div>
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div className="btn-group">
             <button
               className="btn sm primary"
               onClick={() => openChrome('login')}

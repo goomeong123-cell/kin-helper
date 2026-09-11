@@ -171,19 +171,7 @@ export default function History() {
                   {r.body.slice(0, 120)}
                 </div>
                 {r.status === 'failed' && (
-                  <div
-                    style={{
-                      fontSize: 12.5,
-                      lineHeight: 1.5,
-                      color: 'var(--red, #e5484d)',
-                      background: 'rgba(229,72,77,0.07)',
-                      border: '1px solid rgba(229,72,77,0.18)',
-                      borderRadius: 8,
-                      padding: '6px 10px',
-                      marginTop: 2,
-                      wordBreak: 'break-all',
-                    }}
-                  >
+                  <div className="note danger" style={{ marginTop: 2 }}>
                     실패 사유: {r.error || '사유가 기록되지 않았습니다(이전 버전에서 등록된 건)'}
                   </div>
                 )}
