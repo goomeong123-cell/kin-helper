@@ -30,6 +30,13 @@ export interface Account {
   has_password?: boolean;
   /** 워밍업 종료 시각(ISO). 미래면 워밍업 중(답변 안 함), null이면 투입 가능 */
   warmup_until?: string | null;
+  warmup_started_at?: string | null;
+  warmup_sessions?: number;
+  warmup_last_at?: string | null;
+  /** 지금 이 계정의 워밍업 세션이 도는 중 */
+  warmup_busy?: boolean;
+  /** 다음 세션 예정 시각(ms) */
+  warmup_next_at?: number | null;
   created_at: string;
 }
 

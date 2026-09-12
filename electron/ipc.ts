@@ -181,7 +181,13 @@ export function registerIpc(ipcMain: IpcMain) {
     // 비밀번호는 화면으로 절대 내보내지 않는다. 저장 여부만 알려준다.
     return rows.map((r) => {
       const { naver_pw, ...rest } = r;
-      return { ...rest, has_password: hasSecret(naver_pw) };
+      return {
+        ...rest,
+        has_password: hasSecret(naver_pw),
+        // 워밍업 진행 표시용 (메모리 상태)
+        warmup_busy: warmupBusy === r.id,
+        warmup_next_at: warmupNextAt.get(r.id) ?? null,
+      };
     });
   });
   ipcMain.handle('accounts:create', (_e, naverId: string) => {
@@ -214,11 +220,15 @@ export function registerIpc(ipcMain: IpcMain) {
     ];
     const next: Record<string, any> = {};
     for (const c of cols) next[c] = fields[c] ?? cur[c];
-    // 워밍업 종료 시각: ISO 문자열이면 설정, 빈 문자열이면 해제, 없으면 유지
+    // 워밍업 종료 시각: ISO 문자열이면 새로 시작(진행 카운터 초기화), 빈 문자열이면 해제, 없으면 유지
     if (typeof fields.warmup_until === 'string') {
+      const on = fields.warmup_until !== '';
       db()
-        .prepare('UPDATE accounts SET warmup_until=? WHERE id=?')
-        .run([fields.warmup_until === '' ? null : fields.warmup_until, id]);
+        .prepare(
+          'UPDATE accounts SET warmup_until=?, warmup_started_at=?, warmup_sessions=0, warmup_last_at=NULL WHERE id=?',
+        )
+        .run([on ? fields.warmup_until : null, on ? new Date().toISOString() : null, id]);
+      warmupNextAt.delete(id);
     }
     // 비밀번호는 평문으로 저장하지 않는다 (OS 암호화). 빈 문자열이면 삭제.
     let pwToSave = cur.naver_pw ?? null;
@@ -876,6 +886,9 @@ export function registerIpc(ipcMain: IpcMain) {
         return { ok: false, error: r.suspended };
       }
       pushLog(`[${a.naver_id}] 워밍업 세션 끝 · 질문 ${r.opened}개 읽음`);
+      db()
+        .prepare('UPDATE accounts SET warmup_sessions=warmup_sessions+1, warmup_last_at=? WHERE id=?')
+        .run([new Date().toISOString(), accountId]);
       return { ok: true };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

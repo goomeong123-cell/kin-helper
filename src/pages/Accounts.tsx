@@ -23,6 +23,11 @@ export default function Accounts() {
   }
   useEffect(() => {
     load();
+    // 워밍업 진행(세션 수·다음 시각·읽는 중)이 바뀌는 게 보이도록 주기 갱신
+    const t = window.setInterval(() => {
+      if (!document.hidden) load();
+    }, 10000);
+    return () => window.clearInterval(t);
   }, []);
 
   async function add() {
@@ -84,6 +89,46 @@ export default function Accounts() {
         </div>
       )}
     </>
+  );
+}
+
+const hm = (ms: number) => new Date(ms).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+
+// 워밍업 진행 상황: 경과 바 + 세션 수 + 마지막/다음 세션
+function WarmupProgress({ account }: { account: Account }) {
+  const end = new Date(account.warmup_until || 0).getTime();
+  const start = account.warmup_started_at ? new Date(account.warmup_started_at).getTime() : end - 3 * 86400000;
+  const now = Date.now();
+  const pct = Math.max(0, Math.min(100, ((now - start) / (end - start)) * 100));
+  const elapsedH = Math.max(0, Math.floor((now - start) / 3600000));
+  const totalH = Math.round((end - start) / 3600000);
+  const busy = !!account.warmup_busy;
+  const next = account.warmup_next_at ?? null;
+  const last = account.warmup_last_at ? new Date(account.warmup_last_at).getTime() : null;
+  const h = new Date().getHours();
+  const offHours = h < 8 || h >= 23;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxWidth: 520 }}>
+      <div className={`progress ${busy ? 'busy' : ''}`} aria-label="워밍업 진행률">
+        <i style={{ width: `${pct}%` }} />
+      </div>
+      <div className="muted" style={{ fontSize: 12.5, display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+        <b style={{ color: 'var(--text)' }}>
+          {Math.floor(elapsedH / 24)}일 {elapsedH % 24}시간 / {Math.round(totalH / 24)}일
+        </b>
+        <span>· 읽기 세션 {account.warmup_sessions ?? 0}회</span>
+        {last != null && <span>· 마지막 {hm(last)}</span>}
+        {busy ? (
+          <span style={{ color: 'var(--blue-dark)', fontWeight: 700 }}>· 지금 크롬에서 읽는 중</span>
+        ) : offHours ? (
+          <span>· 밤(23~08시)엔 쉼</span>
+        ) : next != null ? (
+          <span>· 다음 {next <= now ? '곧' : `~${hm(next)}`}</span>
+        ) : (
+          <span>· 곧 첫 세션</span>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -237,6 +282,7 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
               )}
               {' · '}일일 한도 {account.daily_limit}건{account.memo ? ` · ${account.memo}` : ''}
             </div>
+            {warming && <WarmupProgress account={account} />}
             {fpInfo && (
               <div className={`note ${fpInfo.vmLike || fpInfo.webrtcLeak ? 'danger' : ''}`}>
                 GPU: <b>{fpInfo.webglRenderer || '(없음)'}</b>

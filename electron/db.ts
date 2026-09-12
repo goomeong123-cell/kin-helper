@@ -171,4 +171,7 @@ function migrate() {
   addCol('questions', 'asked_at', 'TEXT');
   addCol('brands', 'exclude_keywords', 'TEXT'); // 브랜드별 제외 키워드(줄바꿈/쉼표 구분) — 제목에 포함 시 수집·발행 제외
   addCol('accounts', 'warmup_until', 'TEXT'); // 워밍업 종료 시각(ISO). 미래면 워밍업 중 → 답변 안 함
+  addCol('accounts', 'warmup_started_at', 'TEXT'); // 워밍업 시작 시각(ISO) — 진행률 표시용
+  addCol('accounts', 'warmup_sessions', 'INTEGER NOT NULL DEFAULT 0'); // 이번 워밍업에서 완료한 세션 수
+  addCol('accounts', 'warmup_last_at', 'TEXT'); // 마지막 세션 완료 시각(ISO)
 }
