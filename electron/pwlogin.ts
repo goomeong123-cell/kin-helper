@@ -17,6 +17,8 @@ import { app } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 import type { AccountProxy } from './naver';
+import { createContextStore } from './browser-contexts';
+import { readAuthState, AUTH_STOP } from './session-auth';
 
 /** 계정 시드로부터 항상 같은 값이 나오는 지문 (접속마다 바뀌면 그게 봇 신호) */
 function fnv1a(str: string): number {
@@ -133,163 +135,86 @@ export async function applyStealthInit(
   }, fp);
 }
 
-export interface PwLoginResult {
-  ok: boolean;
-  error?: string;
-  cookies?: Array<{
-    name: string; value: string; domain: string; path: string;
-    expires: number; httpOnly: boolean; secure: boolean; sameSite?: string;
-  }>;
-}
+const accountContexts = createContextStore(async (_id, config) => {
+  const acc = JSON.parse(config) as AccountProxy;
+  const { chromium } = await import('playwright');
+  const ctx = await chromium.launchPersistentContext(profileDirFor(acc.id), buildContextOptions(acc));
+  try { await applyStealthInit(ctx, acc); }
+  catch (e) { await ctx.close(); throw e; }
+  return ctx;
+});
 
-/**
- * 진짜 Chrome으로 네이버 로그인 창을 띄우고, 사람이 로그인할 때까지 기다린다.
- * 로그인이 확인되면(NID_AUT 쿠키) 그 쿠키를 반환한다. 창을 닫으면 종료.
- */
+export function getAccountContext(acc: AccountProxy) {
+  if (!acc.proxyHost || !acc.proxyPort) throw new Error('프록시를 먼저 설정해 주세요.');
+  return accountContexts.get(acc.id, JSON.stringify(acc));
+}
+export const closeAccountContext = (id: number) => accountContexts.close(id);
+export const closeAllKinContexts = () => accountContexts.closeAll();
+export const shutdownAccountContexts = () => accountContexts.shutdown();
+export const hasOpenAccountContext = () => accountContexts.hasOpen();
+
+export interface PwLoginResult { ok: boolean; error?: string; }
+
+/** Explicit login only. Opening a browser never forces a login or copies cookies. */
 export async function loginWithRealChrome(
   acc: AccountProxy,
   onStatus?: (s: string) => void,
-  // 로그인이 확인되는 즉시 호출된다(창은 그대로 열려 있음) — 앱 세션에 바로 반영하기 위함
-  onCookies?: (c: NonNullable<PwLoginResult['cookies']>) => void | Promise<void>,
-  // 저장된 비밀번호가 있으면 '딱 1회' 자동 입력한다 (없으면 사람이 직접 입력)
   password?: string,
+  mode: 'login' | 'browse' = 'login',
 ): Promise<PwLoginResult> {
-  let chromium: typeof import('playwright').chromium;
   try {
-    ({ chromium } = await import('playwright'));
-  } catch (e) {
-    return { ok: false, error: 'playwright 로드 실패: ' + (e instanceof Error ? e.message : String(e)) };
-  }
-
-  const fp = deriveFingerprint(acc.naverId || String(acc.id));
-  const proxy =
-    acc.proxyHost && acc.proxyPort
-      ? {
-          server: `http://${acc.proxyHost}:${acc.proxyPort}`,
-          username: acc.proxyUser || undefined,
-          password: acc.proxyPass || undefined,
-        }
-      : undefined;
-
-  let ctx: import('playwright').BrowserContext | null = null;
-  try {
-    onStatus?.('진짜 Chrome 실행 중…');
-    ctx = await chromium.launchPersistentContext(profileDirFor(acc.id), buildContextOptions(acc));
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (/channel|chrome.*not found|Executable doesn't exist/i.test(msg)) {
-      return { ok: false, error: '이 컴퓨터에 Google Chrome이 설치돼 있지 않습니다. Chrome을 먼저 설치해 주세요.' };
+    const ctx = await getAccountContext(acc);
+    const page = ctx.pages()[0] || await ctx.newPage();
+    await page.goto('https://www.naver.com/', { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.bringToFront();
+    await new Promise(r => setTimeout(r, 1500));
+    let state = await readAuthState(ctx, page);
+    if (mode === 'browse') {
+      onStatus?.('브라우저를 열었습니다. 로그인 상태는 변경하지 않습니다.');
+      return { ok: true };
     }
-    return { ok: false, error: 'Chrome 실행 실패: ' + msg.slice(0, 200) };
-  }
-
-  try {
-    // 자동화 흔적만 가린다. 진짜 크롬이라 그 외에는 위장할 게 없다.
-    await applyStealthInit(ctx, acc);
-
-    const page = ctx.pages()[0] || (await ctx.newPage());
-
-    // ★ 사람처럼 '네이버 메인 → 로그인 버튼' 순서로 들어간다.
-    //   갓 만든 빈 프로필이 첫 요청부터 로그인 주소로 직행하면(쿠키·리퍼러 없음)
-    //   그 자체가 비정상 접근 신호가 된다. 메인을 먼저 거쳐야 기본 쿠키가 생기고
-    //   리퍼러도 정상으로 남는다. (카페포스터가 쓰는 순서와 동일)
-    onStatus?.('네이버 메인 여는 중…');
-    await page.goto('https://www.naver.com/', { waitUntil: 'domcontentloaded' }).catch(() => {});
-    await new Promise((r) => setTimeout(r, 1200 + Math.floor(Math.random() * 1500)));
-
-    // 메인에서 '로그인' 링크를 실제로 눌러서 이동 (실패하면 주소로 폴백)
-    let clicked = false;
-    try {
-      // 화면에 실제로 보이는 로그인 링크만 클릭 (숨은 요소를 잡으면 타임아웃 남)
+    if (state !== 'authenticated') {
+      const cs = await ctx.cookies('https://www.naver.com/');
+      const hasExistingAuth = cs.some(c => (c.name === 'NID_AUT' || c.name === 'NID_SES') && !!c.value);
+      if (state !== 'signed-out' || hasExistingAuth) {
+        onStatus?.(AUTH_STOP + ' 열린 창에서 상태를 직접 확인해 주세요.');
+        return { ok: false, error: AUTH_STOP };
+      }
       const link = page.locator('a[href*="nidlogin.login"]:visible, a.link_login:visible').first();
-      if (await link.count()) {
-        await link.scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
-        await link.click({ timeout: 6000 });
-        await page.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => {});
-        clicked = /nidlogin/.test(page.url());
+      await link.click({ timeout: 8000 });
+      await page.waitForLoadState('domcontentloaded');
+      if (password) {
+        const result = await tryAutoLogin(page, acc.naverId, password, onStatus);
+        if (result !== 'ok') return { ok: false, error: '자동 로그인 시도를 중단했습니다. 열린 창에서 확인해 주세요.' };
       }
-    } catch {
-      // 링크를 못 찾거나 클릭 실패 — 아래에서 주소로 이동
+    } else {
+      onStatus?.('기존 로그인 상태를 확인했습니다. 재로그인하지 않습니다.');
     }
-    if (!clicked && !/nidlogin/.test(page.url())) {
-      await page.goto('https://nid.naver.com/nidlogin.login', { waitUntil: 'domcontentloaded' }).catch(() => {});
-    }
-    // 저장된 비밀번호가 있으면 여기서 딱 한 번 자동 입력한다.
-    // (실패하거나 캡차/추가인증이 뜨면 그대로 두고 사람이 처리 — 절대 반복하지 않는다)
-    if (password) {
-      const r = await tryAutoLogin(page, acc.naverId, password, onStatus);
-      if (r === 'ok') onStatus?.('자동 로그인 시도함 — 결과 확인 중…');
-      else if (r === 'challenge') onStatus?.('추가 확인이 필요합니다 — 창에서 직접 처리해 주세요.');
-      else onStatus?.('자동 입력에 실패했습니다 — 창에서 직접 로그인해 주세요.');
-    }
-    onStatus?.('브라우저를 열었습니다. 로그인/프로필 설정을 끝내고 창을 닫아 주세요.');
-
-    // ★ 로그인이 확인돼도 창을 닫지 않는다.
-    //   사용자가 프로필 설정을 만지거나 잠깐 둘러볼 수 있어야 하고,
-    //   그렇게 쌓인 히스토리·쿠키가 오히려 계정을 자연스럽게 만든다.
-    //   창을 직접 닫을 때까지 유지하고, 그 사이 쿠키는 계속 최신으로 들고 있는다.
     let closed = false;
-    ctx.on('close', () => {
-      closed = true;
-    });
-    const deadline = Date.now() + 1000 * 60 * 60 * 3; // 안전장치: 최대 3시간
-    let cookies: PwLoginResult['cookies'];
-    let reported = false;
-    while (!closed && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 2000));
-      let cs: Awaited<ReturnType<import('playwright').BrowserContext['cookies']>> = [];
-      try {
-        cs = await ctx.cookies();
-      } catch {
-        break; // 창이 닫힘 — 마지막으로 들고 있던 쿠키를 사용
-      }
-      const naverCookies = cs
-        .filter((c) => (c.domain || '').includes('naver.com'))
-        .map((c) => ({
-          name: c.name, value: c.value, domain: c.domain, path: c.path,
-          expires: c.expires, httpOnly: c.httpOnly, secure: c.secure,
-          sameSite: c.sameSite,
-        }));
-      if (naverCookies.some((c) => c.name === 'NID_AUT' && c.value)) {
-        cookies = naverCookies; // 항상 최신 스냅샷 유지
-        if (!reported) {
-          reported = true;
-          onStatus?.(
-            '로그인 확인됨 ✓ — ⚠ 메일·페이·내정보는 열지 마세요(추가 본인확인이 걸려 계정이 잠깁니다). 지식인·웹툰 등은 안전합니다.',
-          );
-          // 창이 열려 있어도 앱 세션에는 바로 반영해 둔다
-          try {
-            await onCookies?.(naverCookies);
-          } catch {
-            /* ignore */
-          }
-          // 로그인 직후 지식인으로 이동시킨다.
-          // (네이버 메인에 두면 메일 등 고위험 서비스를 누르기 쉬운데,
-          //  메일은 낯선 기기에서 추가 본인확인을 요구해 계정이 잠기는 원인이 된다)
-          try {
-            const p0 = ctx.pages()[0];
-            if (p0) {
-              await p0
-                .goto('https://kin.naver.com/qna/questionList.naver', { waitUntil: 'domcontentloaded' })
-                .catch(() => {});
-            }
-          } catch {
-            /* ignore */
-          }
+    const onClose = () => { closed = true; };
+    ctx.on('close', onClose);
+    let authenticated = state === 'authenticated';
+    const deadline = Date.now() + 3 * 60 * 60 * 1000;
+    try {
+      while (!closed && Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 2000));
+        if (closed) break;
+        const pages = ctx.pages();
+        const current = pages[pages.length - 1];
+        if (!current) continue;
+        state = await readAuthState(ctx, current);
+        if (state === 'authenticated') {
+          if (!authenticated) onStatus?.('로그인 상태를 확인했습니다. 창을 닫으면 작업을 시작할 수 있습니다.');
+          authenticated = true;
+        } else if (authenticated) {
+          onStatus?.(AUTH_STOP);
+          return { ok: false, error: AUTH_STOP };
         }
       }
-    }
-    if (!cookies) {
-      return { ok: false, error: '로그인하지 않은 채로 창이 닫혔습니다.' };
-    }
-    return { ok: true, cookies };
-  } finally {
-    // 프로필 폴더는 그대로 둔다(쿠키·히스토리가 이어져야 자연스러움).
-    try {
-      await ctx?.close();
-    } catch {
-      /* ignore */
-    }
+      return authenticated && closed ? { ok: true } : { ok: false, error: '로그인 확인이 완료되지 않았습니다. 자동으로 다시 시도하지 않습니다.' };
+    } finally { ctx.off('close', onClose); }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
 }
 
@@ -452,6 +377,7 @@ export async function tryAutoLogin(
     if (!(await id.count()) || !(await pw.count())) return 'failed';
 
     onStatus?.('아이디 입력 중…');
+    await id.fill('');
     await id.click({ timeout: 8000 });
     await new Promise((r) => setTimeout(r, 200 + Math.random() * 400));
     // 실제 키 입력 (사람 타이핑 속도)
@@ -461,6 +387,7 @@ export async function tryAutoLogin(
     await new Promise((r) => setTimeout(r, 300 + Math.random() * 500));
 
     onStatus?.('비밀번호 입력 중…');
+    await pw.fill('');
     await pw.click({ timeout: 8000 });
     await new Promise((r) => setTimeout(r, 200 + Math.random() * 400));
     for (const ch of password) {

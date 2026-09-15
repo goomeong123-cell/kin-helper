@@ -6,7 +6,6 @@ import {
   fetchQuestionDetail,
   openAnswerWindow,
   openLoginWindow,
-  persistAccountLogin,
   openAutoWindow,
   autoScrapeList,
   autoOpenAndAnswer,
@@ -14,7 +13,6 @@ import {
   autoIsLoggedIn,
   autoGoToKinAnswerList,
   autoScrapeWaitingList,
-  importCookiesToAccountSession,
   getLastScanCount,
   autoScrapeCurrentPage,
   autoAdvancePage,
@@ -22,7 +20,8 @@ import {
   type AccountProxy,
   type PostMode,
 } from './naver';
-import { loginWithRealChrome, checkProxyExitIp } from './pwlogin';
+import { loginWithRealChrome, checkProxyExitIp, hasOpenAccountContext } from './pwlogin';
+import { requireAuthenticated } from './session-auth';
 import { decryptSecret, encryptSecret, hasSecret, isEncryptionAvailable } from './secret';
 import {
   getAccountContext,
@@ -75,31 +74,22 @@ function titleExcluded(title: string, terms: string[]): boolean {
   return terms.some((t) => hay.includes(t.toLowerCase()));
 }
 
-/**
- * 모든 계정 세션의 네이버 로그인 쿠키를 디스크에 영구화한다.
- * 네이버는 사용 중 NID_SES를 '만료 없는 세션 쿠키'로 계속 새로 발급하는데,
- * 그 상태로 앱이 종료(=업데이트 설치)되면 사라져서 다음 실행 때 로그아웃으로 보인다.
- * → 주기적으로, 그리고 업데이트 설치 직전에 호출해 만료일을 붙여 저장한다.
- */
-export async function persistAllAccountSessions(): Promise<number> {
-  let n = 0;
-  try {
-    const rows = getDb().prepare('SELECT * FROM accounts').all() as any[];
-    for (const a of rows) {
-      try {
-        n += await persistAccountLogin(accountToProxy(a));
-      } catch {
-        // 계정 하나 실패해도 나머지는 계속
-      }
-    }
-  } catch {
-    // DB 미초기화 등 — 무시
-  }
-  return n;
-}
-
 export function registerIpc(ipcMain: IpcMain) {
   const db = () => getDb();
+  // Single browser operation at a time; scheduled tasks never borrow a manual window.
+  let foregroundBusy = false;
+  function handleBrowser(name: string, handler: Parameters<IpcMain['handle']>[1]) {
+    ipcMain.handle(name, async (event, ...args) => {
+      if (foregroundBusy || autoRunning || warmupBusy != null) {
+        return { ok: false, error: '다른 브라우저 작업이 진행 중입니다. 작업을 마친 후 다시 시도해 주세요.' };
+      }
+      foregroundBusy = true;
+      try { return await handler(event, ...args); }
+      catch (e) { return { ok: false, error: e instanceof Error ? e.message : String(e) }; }
+      finally { foregroundBusy = false; }
+    });
+  }
+
 
   // 브랜드 제외 키워드 로드: brandId 지정 시 그 브랜드, 없으면(일상 등) 모든 브랜드 합집합
   const loadExcludeTerms = (brandId?: number | null): string[] => {
@@ -269,7 +259,7 @@ export function registerIpc(ipcMain: IpcMain) {
     db().prepare('DELETE FROM accounts WHERE id = ?').run([id]);
     return true;
   });
-  ipcMain.handle('accounts:login', async (_e, id: number) => {
+  handleBrowser('accounts:login', async (_e, id: number) => {
     const a = db().prepare('SELECT * FROM accounts WHERE id = ?').get([id]) as any;
     if (!a) return { ok: false, error: '계정을 찾을 수 없습니다.' };
     // IP 노출 방지: 프록시 없으면 로그인 창을 열지 않음
@@ -282,24 +272,8 @@ export function registerIpc(ipcMain: IpcMain) {
     // 로그인은 '진짜 Chrome'(Playwright)으로 한다.
     // Electron 창은 크롬 흉내라 로그인 시점에 봇으로 탐지되기 쉬움 → 로그인만 실물 크롬 사용.
     const accP = accountToProxy(a);
-    // 로그인이 확인되는 즉시 앱 세션에 반영한다(창은 계속 열려 있어도 됨).
-    let applied = 0;
-    const res = await loginWithRealChrome(
-      accP,
-      (s) => pushLog('[' + a.naver_id + '] ' + s),
-      async (cookies) => {
-        applied = await importCookiesToAccountSession(accP, cookies);
-        pushLog(`[${a.naver_id}] 세션 적용됨 (쿠키 ${applied}개) — 창은 편하게 쓰다가 닫으세요`);
-      },
-      decryptSecret(a.naver_pw) || undefined,
-    );
-    if (!res.ok || !res.cookies) {
-      return { ok: false, error: res.error || '로그인에 실패했습니다.' };
-    }
-    // 창을 닫을 때 최신 쿠키로 한 번 더 갱신 (로그인 후 더 둘러본 내용까지 반영)
-    const n = await importCookiesToAccountSession(accP, res.cookies);
-    pushLog(`[${a.naver_id}] 브라우저 종료 — 세션 저장 완료 (쿠키 ${n}개)`);
-    return { ok: true };
+    return loginWithRealChrome(accP, (message) => pushLog('[' + a.naver_id + '] ' + message), decryptSecret(a.naver_pw) || undefined);
+
   });
 
   // 프록시로 실제 나가는 IP가 고정인지 확인 (로그인 세션이 끊기는 대표 원인 진단)
@@ -347,7 +321,7 @@ export function registerIpc(ipcMain: IpcMain) {
   });
 
   // 이 계정의 '실제 크롬'이 네이버에 보여주는 기기 지문을 측정 (읽기 전용 — 위장 아님)
-  ipcMain.handle('accounts:fingerprint', async (_e, id: number) => {
+  handleBrowser('accounts:fingerprint', async (_e, id: number) => {
     const a = db().prepare('SELECT * FROM accounts WHERE id = ?').get([id]) as any;
     if (!a) return { ok: false, error: '계정을 찾을 수 없습니다.' };
     if (!a.proxy_host || !a.proxy_port) return { ok: false, error: '프록시를 먼저 등록하세요.' };
@@ -367,7 +341,7 @@ export function registerIpc(ipcMain: IpcMain) {
 
   // 계정 전용 크롬을 그냥 열어보기 (프로필 설정·둘러보기·워밍업용).
   // 로그인 여부와 상관없이 열리고, 창을 닫으면 그때 세션이 저장된다.
-  ipcMain.handle('accounts:openBrowser', async (_e, id: number) => {
+  handleBrowser('accounts:openBrowser', async (_e, id: number) => {
     const a = db().prepare('SELECT * FROM accounts WHERE id = ?').get([id]) as any;
     if (!a) return { ok: false, error: '계정을 찾을 수 없습니다.' };
     if (!a.proxy_host || !a.proxy_port) {
@@ -377,22 +351,8 @@ export function registerIpc(ipcMain: IpcMain) {
       };
     }
     const accP = accountToProxy(a);
-    const res = await loginWithRealChrome(
-      accP,
-      (s) => pushLog('[' + a.naver_id + '] ' + s),
-      async (cookies) => {
-        const k = await importCookiesToAccountSession(accP, cookies);
-        pushLog(`[${a.naver_id}] 세션 적용됨 (쿠키 ${k}개)`);
-      },
-    );
-    // 로그인 안 하고 그냥 둘러보다 닫아도 정상 종료로 본다
-    if (res.ok && res.cookies) {
-      const n = await importCookiesToAccountSession(accP, res.cookies);
-      pushLog(`[${a.naver_id}] 브라우저 종료 — 세션 저장 완료 (쿠키 ${n}개)`);
-    } else {
-      pushLog(`[${a.naver_id}] 브라우저 종료`);
-    }
-    return { ok: true };
+    return loginWithRealChrome(accP, (message) => pushLog('[' + a.naver_id + '] ' + message), undefined, 'browse');
+
   });
 
   /* ---------- 질문 수집 ---------- */
@@ -731,7 +691,7 @@ export function registerIpc(ipcMain: IpcMain) {
   );
 
   /* ---------- 답변 등록 ---------- */
-  ipcMain.handle(
+  handleBrowser(
     'answers:post',
     async (_e, opts: { answerId: number; accountId: number; mode: PostMode }) => {
       const a = db().prepare('SELECT * FROM answers WHERE id = ?').get([opts.answerId]) as any;
@@ -756,7 +716,7 @@ export function registerIpc(ipcMain: IpcMain) {
         pushLog(`[${acc.naver_id}] ${m}`),
       );
       const result = {
-        ok: r.typed || r.submitted,
+        ok: !r.error && (r.typed || r.submitted),
         error: r.error,
         needsHuman: submit ? !r.submitted : true,
       };
@@ -822,23 +782,9 @@ export function registerIpc(ipcMain: IpcMain) {
   /* ---------- 앱 정보 ---------- */
   ipcMain.handle('app:version', () => app.getVersion());
 
-  // 모든 계정의 로그인 쿠키를 디스크에 영구 저장 (앱 종료 전 호출 → 재시작/업데이트 후 로그인 유지)
-  const persistAllLogins = async () => {
-    try {
-      const accs = db().prepare('SELECT * FROM accounts').all() as any[];
-      for (const a of accs) {
-        await persistAccountLogin(accountToProxy(a)).catch(() => 0);
-      }
-    } catch {
-      // ignore
-    }
-  };
-  ipcMain.handle('accounts:persistLogins', persistAllLogins);
-  app.on('before-quit', () => {
-    void persistAllLogins();
-  });
+  // Compatibility for old renderer callers. Chrome persists its own profile.
+  ipcMain.handle('accounts:persistLogins', () => ({ ok: true }));
 
-  /* ---------- 완전자동 (Autopilot) ---------- */
   let autoRunning = false;
   let autoStop = false;
   let autoStatus = '대기';
@@ -867,6 +813,7 @@ export function registerIpc(ipcMain: IpcMain) {
   /* ---------- 워밍업: 답변 없이 사람처럼 지식인만 읽는다 (계정/프록시별) ---------- */
   // 한 세션 = 그 계정의 크롬(로그인한 프로필·프록시)으로 3~6분 읽기. 답변 절대 안 함.
   async function runWarmupOnce(accountId: number): Promise<{ ok: boolean; error?: string }> {
+    if (foregroundBusy || hasOpenAccountContext()) return { ok: false, error: '열린 Chrome 창이나 진행 중인 작업이 있어 워밍업을 시작하지 않습니다.' };
     if (autoRunning) return { ok: false, error: '완전자동 실행 중에는 워밍업을 돌리지 않습니다.' };
     if (warmupBusy != null) return { ok: false, error: '다른 계정 워밍업이 진행 중입니다.' };
     const a = db().prepare('SELECT * FROM accounts WHERE id = ?').get([accountId]) as any;
@@ -905,7 +852,7 @@ export function registerIpc(ipcMain: IpcMain) {
   // 3분마다: 워밍업 중인 계정 중 예정 시각이 지난 계정 하나를 골라 세션 실행. 08~23시만.
   // ponytail: 계정 하나씩 순차 실행 — 크롬 창 하나만 뜨게. 계정이 많아 하루 세션이 부족하면 간격을 줄일 것.
   setInterval(() => {
-    if (autoRunning || warmupBusy != null) return;
+    if (autoRunning || warmupBusy != null || foregroundBusy || hasOpenAccountContext()) return;
     const h = new Date().getHours();
     if (h < 8 || h >= 23) return;
     const rows = db()
@@ -964,6 +911,7 @@ export function registerIpc(ipcMain: IpcMain) {
   });
 
   ipcMain.handle('auto:stop', () => {
+    if (!autoRunning) return true;
     autoStop = true;
     if (autoNextResolve) {
       const r = autoNextResolve;
@@ -980,6 +928,7 @@ export function registerIpc(ipcMain: IpcMain) {
       _e,
       opts: { accountId?: number; accountIds?: number[]; submit: boolean; brandId?: number; useCollected?: boolean },
     ) => {
+    if (foregroundBusy) return { ok: false, error: '로그인 또는 수동 작업을 먼저 마쳐주세요.' };
     if (autoRunning) return { ok: false, error: '이미 실행 중입니다.' };
     if (warmupBusy != null) return { ok: false, error: '워밍업 세션이 진행 중입니다. 몇 분 뒤 다시 시작하세요.' };
     // 여러 계정(교대) 또는 단일 계정 모두 지원
@@ -1017,10 +966,10 @@ export function registerIpc(ipcMain: IpcMain) {
       .catch((e) => {
         pushLog('오류: ' + (e instanceof Error ? e.message : String(e)));
       })
-      .finally(() => {
-        autoRunning = false;
+      .finally(async () => {
         autoNextResolve = null;
-        closeAllKinContexts().catch(() => {});
+        await closeAllKinContexts().catch(() => {});
+        autoRunning = false;
       });
     return { ok: true };
   });
@@ -1104,7 +1053,10 @@ export function registerIpc(ipcMain: IpcMain) {
         kinCtx = null;
         return await switchAccount();
       }
-      const okLogin = await pwIsLoggedIn(kinCtx);
+      const authPage = kinCtx.pages()[0] || await kinCtx.newPage();
+      await authPage.goto('https://www.naver.com/', { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await requireAuthenticated(kinCtx, authPage);
+      const okLogin = true;
       if (okLogin) pushLog(`[${acc.naver_id}] 로그인 확인됨 ✓`);
       else pushLog(`⚠ [${acc.naver_id}] 로그인 안 됨 — 계정·프록시 탭에서 로그인하세요`);
       return true;
@@ -1245,6 +1197,8 @@ export function registerIpc(ipcMain: IpcMain) {
       let preloaded: { title?: string; body?: string } = {};
       if (kinCtx) {
         await pwOpenQuestion(kinCtx, targetUrl).catch(() => {});
+        const openPages = (kinCtx as import('playwright').BrowserContext).pages();
+        await requireAuthenticated(kinCtx, openPages[openPages.length - 1]);
         preloaded = await pwReadOpenQuestion(kinCtx);
         pushLog(
           `질문 확인: 제목 ${(preloaded.title || targetTitle || '').length}자 / 본문 ${(preloaded.body || '').length}자`,
@@ -1270,13 +1224,14 @@ export function registerIpc(ipcMain: IpcMain) {
       const bodyLen = String(gen.answer.body || '').length;
       const capMs = Math.max(120000, Math.round(bodyLen * 85) + 90000); // 타이핑 예상 + 여유 90초
       pushLog(`사람처럼 답변 작성 중… (${bodyLen}자 · 최대 ${Math.round(capMs / 1000)}초)`);
-      // 전체 안전망: 열기·입력·등록이 제한시간 내 안 끝나면(페이지/네트워크 hang) 실패 처리하고 다음으로.
+      // 시간 초과 시 Chrome을 닫고 전체 작업을 중단한다. 이전 입력과 다음 작업이 겹치지 않도록 한다.
       let res: { typed: boolean; submitted: boolean; error?: string };
+      let answerTimer: ReturnType<typeof setTimeout> | undefined;
       try {
         res = await Promise.race([
           pwAnswerQuestion(kinCtx!, targetUrl, gen.answer.body, submit, (s) => pushLog('· ' + s)),
           new Promise<never>((_, rej) =>
-            setTimeout(
+            answerTimer = setTimeout(
               () =>
                 rej(
                   new Error(
@@ -1288,8 +1243,13 @@ export function registerIpc(ipcMain: IpcMain) {
           ),
         ]);
       } catch (e) {
+        await closeAccountContext(accountId).catch(() => {});
+        autoStop = true;
         res = { typed: false, submitted: false, error: e instanceof Error ? e.message : String(e) };
+      } finally {
+        clearTimeout(answerTimer);
       }
+      if (res.error?.includes('[AUTH_STOP]')) autoStop = true;
       if (res.error) {
         // 작업 도중 보호조치가 걸렸는지 확인 — 걸렸으면 이 계정은 즉시 중단(더 시도하면 악화)
         if (kinCtx && /로그인이 풀렸|답변' 버튼 없음/.test(res.error)) {
@@ -1322,6 +1282,10 @@ export function registerIpc(ipcMain: IpcMain) {
         //  실패 상세는 answer row의 status='failed'+error에 남음)
         if (qrow && qrow.id)
           db().prepare("UPDATE questions SET status='skipped' WHERE id=?").run([qrow.id]);
+        if (autoStop) {
+          pushLog(res.error);
+          break;
+        }
         if (isFaqErr) {
           pushLog('건너뜀(FAQ 권한 필요): ' + res.error);
           await sleepRnd(1500, 3000);
@@ -1372,6 +1336,11 @@ export function registerIpc(ipcMain: IpcMain) {
         }
       }
       } catch (e) {
+        if (e instanceof Error && e.message.includes('[AUTH_STOP]')) {
+          autoStop = true;
+          pushLog(e.message);
+          break;
+        }
         pushLog('이 질문 처리 중 오류 — 건너뛰고 계속: ' + (e instanceof Error ? e.message : String(e)));
         await sleepRnd(4000, 8000);
       }

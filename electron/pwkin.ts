@@ -1,10 +1,5 @@
-// 지식인 작업(질문 찾기·답변·등록)을 '로그인한 그 크롬 그대로' 수행한다.
-//
-// 왜 필요한가:
-//   예전엔 로그인만 진짜 크롬으로 하고, 쿠키를 Electron 창으로 옮겨 답변을 등록했다.
-//   그러면 같은 세션 쿠키가 갑자기 다른 브라우저에서 나타나는 꼴이라 네이버가
-//   '세션 탈취'로 보고 세션을 죽인다(= 등록이 안 되고 곧 로그아웃됨).
-//   로그인부터 등록까지 전부 같은 크롬 컨텍스트에서 해야 한다. (카페포스터와 동일)
+// 질문 작업은 로그인과 동일한 Chrome 프로필 및 컨텍스트 관리자를 사용한다.
+// 이 구조가 네이버 보호조치의 원인이나 해소 여부를 입증하는 것은 아니다.
 
 import type { BrowserContext, Page } from 'playwright';
 import type { AccountProxy, CollectedQuestion } from './naver';
@@ -18,50 +13,12 @@ import {
   searchInPageJS,
   normalizeKinUrl,
 } from './naver';
-import { applyStealthInit, buildContextOptions, profileDirFor } from './pwlogin';
+export { getAccountContext, closeAccountContext, closeAllKinContexts } from './pwlogin';
+import { readAuthState, requireAuthenticated } from './session-auth';
 
 const rnd = (a: number, b: number) => a + Math.floor(Math.random() * (b - a));
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const human = (min = 600, max = 1600) => sleep(rnd(min, max));
-
-// 계정별 크롬 컨텍스트를 재사용한다 (매번 새로 띄우면 느리고 부자연스럽다)
-const contexts = new Map<number, BrowserContext>();
-
-function isAlive(ctx: BrowserContext): boolean {
-  try {
-    return !!ctx.browser()?.isConnected();
-  } catch {
-    return false;
-  }
-}
-
-/** 이 계정의 크롬 컨텍스트 (없으면 띄운다). 로그인 때 쓰던 프로필을 그대로 사용. */
-export async function getAccountContext(acc: AccountProxy): Promise<BrowserContext> {
-  const existing = contexts.get(acc.id);
-  if (existing && isAlive(existing)) return existing;
-  const { chromium } = await import('playwright');
-  const ctx = await chromium.launchPersistentContext(profileDirFor(acc.id), buildContextOptions(acc));
-  // 로그인 때와 '완전히 같은' 위장을 적용해야 한다. 조금이라도 다르면 세션을 의심받는다.
-  await applyStealthInit(ctx, acc);
-  contexts.set(acc.id, ctx);
-  ctx.on('close', () => contexts.delete(acc.id));
-  return ctx;
-}
-
-export async function closeAccountContext(accountId: number): Promise<void> {
-  const ctx = contexts.get(accountId);
-  contexts.delete(accountId);
-  try {
-    if (ctx && isAlive(ctx)) await ctx.close();
-  } catch {
-    /* ignore */
-  }
-}
-
-export async function closeAllKinContexts(): Promise<void> {
-  for (const id of Array.from(contexts.keys())) await closeAccountContext(id);
-}
-
 
 /**
  * 진짜 마우스 클릭 (isTrusted=true). 실패하면 JS 클릭으로 폴백한다.
@@ -114,12 +71,7 @@ async function closeExtraTabs(ctx: BrowserContext): Promise<void> {
 
 /** 로그인 여부 — 쿠키로 판정 (DOM보다 안정적) */
 export async function pwIsLoggedIn(ctx: BrowserContext): Promise<boolean> {
-  try {
-    const cs = await ctx.cookies();
-    return cs.some((c) => (c.name === 'NID_AUT' || c.name === 'NID_SES') && !!c.value);
-  } catch {
-    return false;
-  }
+  return (await readAuthState(ctx, await activePage(ctx))) === 'authenticated';
 }
 
 /**
@@ -138,6 +90,7 @@ export async function pwFindQuestion(
 
   await page.goto(QUESTION_LIST_URL, { waitUntil: 'domcontentloaded', timeout: 40000 }).catch(() => {});
   await human(2200, 3400);
+  await requireAuthenticated(ctx, page);
   await realClick(page, '#contentsOfMain', ACTIVATE_TAB_JS);
   await human(1400, 2400);
 
@@ -184,6 +137,7 @@ export async function pwFindQuestion(
   let pageNo = 1;
   const seen = new Set<string>();
   while (pageNo <= scanPages) {
+    await requireAuthenticated(ctx, page);
     await page.evaluate('window.scrollBy(0, 400);').catch(() => {});
     await human(500, 1100);
     const list = (await page.evaluate(SCRAPE_NOANSWER_JS).catch(() => [])) as CollectedQuestion[];
@@ -311,38 +265,7 @@ export async function pwAnswerQuestion(
 
     // 로그인이 풀렸으면 '그 순간의 상태'를 그대로 남긴다.
     // (무엇이 세션을 끊었는지 알아야 원인을 특정할 수 있다 — 추측 금지)
-    if (!(await pwIsLoggedIn(ctx))) {
-      let diag = '';
-      try {
-        const snap = (await page.evaluate(`
-          (function () {
-            var t = (document.body ? (document.body.innerText || '') : '').replace(/\s+/g, ' ').trim();
-            return {
-              url: location.href.slice(0, 120),
-              title: (document.title || '').slice(0, 60),
-              head: t.slice(0, 220),
-              hasLoginLink: !!document.querySelector('a[href*="nidlogin.login"]')
-            };
-          })();
-        `)) as { url: string; title: string; head: string; hasLoginLink: boolean };
-        const cs = await ctx.cookies().catch(() => []);
-        const names = cs
-          .filter((c) => c.name.startsWith('NID') || c.name === 'NNB')
-          .map((c) => c.name)
-          .join(',');
-        diag =
-          ` | 화면="${snap.title}" · 남은쿠키=[${names || '없음'}]` +
-          ` · 로그인링크=${snap.hasLoginLink ? '있음' : '없음'} · 내용="${snap.head}"`;
-      } catch {
-        /* 진단 실패는 무시 */
-      }
-      onStep?.(`⚠ 로그인 끊김 감지${diag}`);
-      return {
-        typed: false,
-        submitted: false,
-        error: '로그인이 풀렸습니다 — 계정·프록시 탭에서 다시 로그인하세요' + diag,
-      };
-    }
+    await requireAuthenticated(ctx, page);
 
     onStep?.('답변 버튼 클릭');
     const opened = await realClick(
@@ -377,7 +300,12 @@ export async function pwAnswerQuestion(
 
     // 사람처럼 한 글자씩 (문장부호에서 가끔 쉼)
     const NL = String.fromCharCode(10);
+    let nextAuthCheck = 0;
     for (const ch of answer) {
+      if (Date.now() >= nextAuthCheck) {
+        await requireAuthenticated(ctx, page);
+        nextAuthCheck = Date.now() + 2000;
+      }
       if (ch === NL) {
         await page.keyboard.press('Enter');
         await sleep(rnd(80, 200));
@@ -393,10 +321,12 @@ export async function pwAnswerQuestion(
     if (!submit) return { typed: true, submitted: false };
 
     await human(1200, 2400);
+    await requireAuthenticated(ctx, page);
     onStep?.('등록 버튼 클릭');
     const submitted = await realClick(page, '#answerRegisterButton, button._answerRegisterButton', SUBMIT_JS);
     if (!submitted) return { typed: true, submitted: false, error: "'등록' 버튼을 찾지 못함" };
     await human(1800, 3000);
+    await requireAuthenticated(ctx, page);
     await closeExtraTabs(ctx).catch(() => {});
     return { typed: true, submitted: true };
   } catch (e) {
@@ -581,6 +511,7 @@ export async function pwFingerprintDiag(ctx: BrowserContext): Promise<Fingerprin
     await page.close().catch(() => {});
   }
 }
+
 
 /**
  * 워밍업 세션 — 로그인한 그 크롬으로 사람처럼 지식인을 '읽기만' 한다. 답변은 절대 하지 않는다.

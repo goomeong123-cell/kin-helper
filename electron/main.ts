@@ -2,7 +2,8 @@ import { app, BrowserWindow, ipcMain, dialog } from 'electron';
 import path from 'node:path';
 import { autoUpdater } from 'electron-updater';
 import { initDb, closeDb } from './db';
-import { registerIpc, persistAllAccountSessions } from './ipc';
+import { registerIpc } from './ipc';
+import { shutdownAccountContexts } from './pwlogin';
 
 process.env.APP_ROOT = path.join(__dirname, '..');
 const VITE_DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL;
@@ -84,7 +85,7 @@ function registerUpdateIpc() {
     // 설치로 앱이 종료되기 전에 로그인 세션을 반드시 디스크에 저장한다(업데이트 후 로그아웃 방지)
     if (updateState.status === 'downloaded')
       setImmediate(async () => {
-        await persistAllAccountSessions().catch(() => 0);
+        await shutdownAccountContexts();
         autoUpdater.quitAndInstall();
       });
     return true;
@@ -130,7 +131,7 @@ function setupAutoUpdate() {
         });
         if (response === 0) {
           setImmediate(async () => {
-            await persistAllAccountSessions().catch(() => 0);
+            await shutdownAccountContexts();
             autoUpdater.quitAndInstall();
           });
         }
@@ -190,26 +191,24 @@ if (!gotTheLock) {
     createWindow();
     setupAutoUpdate();
 
-    // 네이버가 사용 중 새로 발급하는 세션 쿠키(NID_SES 등)를 주기적으로 영구화한다.
-    // 앱이 갑자기 종료돼도(업데이트 설치·강제종료) 로그인이 유지되도록 하는 안전망.
-    setInterval(() => {
-      persistAllAccountSessions().catch(() => 0);
-    }, 2 * 60 * 1000);
-
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();
     });
   });
 }
 
-app.on('before-quit', () => {
-  // 종료 직전 마지막 저장 시도 (완료 못 해도 아래 주기 저장이 대부분 덮어둔 상태)
-  persistAllAccountSessions().catch(() => 0);
-  try {
-    closeDb();
-  } catch (e) {
-    console.error('[main] closeDb error:', e);
-  }
+let shutdownComplete = false;
+let shutdownStarted = false;
+app.on('before-quit', (event) => {
+  if (shutdownComplete) return;
+  event.preventDefault();
+  if (shutdownStarted) return;
+  shutdownStarted = true;
+  void shutdownAccountContexts().catch((error) => console.error('[main] Chrome close failed:', error)).finally(() => {
+    try { closeDb(); } catch (error) { console.error('[main] closeDb error:', error); }
+    shutdownComplete = true;
+    app.quit();
+  });
 });
 
 app.on('window-all-closed', () => {
