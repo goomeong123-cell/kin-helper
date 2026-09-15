@@ -1055,7 +1055,7 @@ export function registerIpc(ipcMain: IpcMain) {
       }
       const authPage = kinCtx.pages()[0] || await kinCtx.newPage();
       await authPage.goto('https://www.naver.com/', { waitUntil: 'domcontentloaded', timeout: 30000 });
-      await requireAuthenticated(kinCtx, authPage);
+      await requireAuthenticated(kinCtx, authPage, 8000);
       const okLogin = true;
       if (okLogin) pushLog(`[${acc.naver_id}] 로그인 확인됨 ✓`);
       else pushLog(`⚠ [${acc.naver_id}] 로그인 안 됨 — 계정·프록시 탭에서 로그인하세요`);

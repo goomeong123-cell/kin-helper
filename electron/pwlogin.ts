@@ -18,7 +18,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import type { AccountProxy } from './naver';
 import { createContextStore } from './browser-contexts';
-import { readAuthState, AUTH_STOP } from './session-auth';
+import { readAuthState, waitForAuth, describeAuth, AUTH_STOP } from './session-auth';
 
 /** 계정 시드로부터 항상 같은 값이 나오는 지문 (접속마다 바뀌면 그게 봇 신호) */
 function fnv1a(str: string): number {
@@ -168,7 +168,8 @@ export async function loginWithRealChrome(
     await page.goto('https://www.naver.com/', { waitUntil: 'domcontentloaded', timeout: 30000 });
     await page.bringToFront();
     await new Promise(r => setTimeout(r, 1500));
-    let state = await readAuthState(ctx, page);
+    const initial = await waitForAuth(ctx, page, mode === 'login' ? 8000 : 0);
+    let state = initial.state;
     if (mode === 'browse') {
       onStatus?.('브라우저를 열었습니다. 로그인 상태는 변경하지 않습니다.');
       return { ok: true };
@@ -177,8 +178,9 @@ export async function loginWithRealChrome(
       const cs = await ctx.cookies('https://www.naver.com/');
       const hasExistingAuth = cs.some(c => (c.name === 'NID_AUT' || c.name === 'NID_SES') && !!c.value);
       if (state !== 'signed-out' || hasExistingAuth) {
-        onStatus?.(AUTH_STOP + ' 열린 창에서 상태를 직접 확인해 주세요.');
-        return { ok: false, error: AUTH_STOP };
+        const error = AUTH_STOP + ' ' + describeAuth(initial);
+        onStatus?.(error);
+        return { ok: false, error };
       }
       const link = page.locator('a[href*="nidlogin.login"]:visible, a.link_login:visible').first();
       await link.click({ timeout: 8000 });
@@ -188,12 +190,12 @@ export async function loginWithRealChrome(
         if (result !== 'ok') return { ok: false, error: '자동 로그인 시도를 중단했습니다. 열린 창에서 확인해 주세요.' };
       }
     } else {
-      onStatus?.('기존 로그인 상태를 확인했습니다. 재로그인하지 않습니다.');
+      onStatus?.('기존 로그인 상태를 확인했습니다. Chrome을 닫지 않고 작업을 시작하세요.');
+      return { ok: true };
     }
     let closed = false;
     const onClose = () => { closed = true; };
     ctx.on('close', onClose);
-    let authenticated = state === 'authenticated';
     const deadline = Date.now() + 3 * 60 * 60 * 1000;
     try {
       while (!closed && Date.now() < deadline) {
@@ -204,14 +206,12 @@ export async function loginWithRealChrome(
         if (!current) continue;
         state = await readAuthState(ctx, current);
         if (state === 'authenticated') {
-          if (!authenticated) onStatus?.('로그인 상태를 확인했습니다. 창을 닫으면 작업을 시작할 수 있습니다.');
-          authenticated = true;
-        } else if (authenticated) {
-          onStatus?.(AUTH_STOP);
-          return { ok: false, error: AUTH_STOP };
+          onStatus?.('로그인 상태를 확인했습니다. Chrome을 닫지 않고 작업을 시작하세요.');
+          return { ok: true };
+
         }
       }
-      return authenticated && closed ? { ok: true } : { ok: false, error: '로그인 확인이 완료되지 않았습니다. 자동으로 다시 시도하지 않습니다.' };
+      return { ok: false, error: '로그인 확인이 완료되지 않았습니다. 자동으로 다시 시도하지 않습니다.' };
     } finally { ctx.off('close', onClose); }
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };

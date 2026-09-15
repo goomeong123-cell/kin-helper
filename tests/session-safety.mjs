@@ -12,7 +12,7 @@ async function bundle(file, plugins = []) {
   return import('data:text/javascript;base64,' + Buffer.from(result.outputFiles[0].text).toString('base64'));
 }
 const { createContextStore } = await bundle('electron/browser-contexts.ts');
-const { readAuthState, requireAuthenticated } = await bundle('electron/session-auth.ts');
+const { readAuthState, requireAuthenticated, inspectAuth, describeAuth } = await bundle('electron/session-auth.ts');
 class Context extends EventEmitter {
   async close() { this.emit('close'); }
 }
@@ -58,7 +58,8 @@ try {
   await ctx.clearCookies();
   await ctx.addCookies([cookies[0]]);
   assert.equal(await readAuthState(ctx, page), 'unknown');
-  await assert.rejects(requireAuthenticated(ctx, page), /AUTH_STOP/);
+  await assert.rejects(requireAuthenticated(ctx, page), /NID_SES=없음/);
+  assert.ok(!describeAuth(await inspectAuth(ctx, page)).includes('synthetic-test-only'));
   await ctx.addCookies(cookies);
   await page.setContent('<div>unrecognized page</div>');
   assert.equal(await readAuthState(ctx, page), 'unknown');
@@ -98,8 +99,8 @@ try {
   try {
     active = fixture([{ login: false, logout: true }, { login: true, logout: false }]);
     const lost = await login.loginWithRealChrome({ id: 1, naverId: 'test', proxyHost: 'test.invalid', proxyPort: 1 }, undefined, 'synthetic-only');
-    assert.equal(lost.ok, false);
-    assert.match(lost.error, /AUTH_STOP/);
+    assert.equal(lost.ok, true); // Successful login hands off the still-open context.
+    assert.equal(await login.getAccountContext({ id: 1, naverId: 'test', proxyHost: 'test.invalid', proxyPort: 1 }), active);
     assert.equal(active.clicks, 0);
     assert.deepEqual(active.gotos, ['https://www.naver.com/']);
     await login.closeAllKinContexts();
@@ -119,4 +120,4 @@ try {
   assert.ok(path.basename(temp).startsWith('kin-session-test-'));
   await rm(temp, { recursive: true, force: true });
 }
-console.log('PASS: existing session skips login, session loss returns failure, browse never logs in, unknown state refuses auto-login');
+console.log('PASS: existing session hands off without closing or logging in again, browse never logs in, unknown state refuses auto-login');
