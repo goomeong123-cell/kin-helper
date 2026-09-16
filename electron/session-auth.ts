@@ -68,3 +68,12 @@ export async function requireAuthenticated(ctx: BrowserContext, page: Page, time
   const snap = await waitForAuth(ctx, page, timeoutMs);
   if (snap.state !== 'authenticated') throw new Error(AUTH_STOP + ' ' + describeAuth(snap));
 }
+
+/** A signed-out session is allowed only when it started without auth cookies. */
+export function assertWarmupAuth(current: AuthSnapshot, initial?: AuthSnapshot): void {
+  if (current.state === 'unknown'
+      || (current.state === 'signed-out' && (current.hasAuth || current.hasSession))
+      || (initial && initial.state !== current.state)) {
+    throw new Error(AUTH_STOP + ' 워밍업 중단: ' + describeAuth(current));
+  }
+}

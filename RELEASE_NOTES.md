@@ -1,3 +1,12 @@
+# v0.9.6 — 위장 최소화(A안) + 워밍업 리듬 사람화 + Codex 안전 수정 통합
+
+- **브라우저 정보 변경은 `navigator.webdriver` 마스킹 하나만 남깁니다.** Playwright가 띄운 Chrome은 실행 인자와 무관하게 `webdriver=true`로 보이는 것을 about:blank에서 실측(네이버 접속 없음)했고, 프로토타입 getter로 `false`가 되며 own-property 흔적이 없는 것도 확인했습니다. 코어/메모리/화면/UA/Client Hints 위장은 제거된 상태를 유지합니다.
+- `--enable-automation` 안내 막대만 끕니다(`ignoreDefaultArgs`). 이 인자는 webdriver 값을 바꾸지 않습니다(실측).
+- 워밍업 리듬: 하루 계획(3~9회를 07~10시 시작·21~24시 종료 구간에 무작위 산포 → 간격이 지수분포), 15% 쉬는 날, 세션 유형 3종(훑기/깊게 읽기/검색), 글 길이 비례 체류. 앱이 꺼져 있던 동안 지나간 예정(1시간 초과)은 버립니다.
+- Codex 로컬 수정 포함: 모든 네이버 요청에 프록시 필수(`network-config.ts`), HTTPS 인증서 검사 복구, 빈 비밀번호 보존 + 명시적 삭제 체크박스, 워밍업 인증 검사(AUTH_STOP), 진단 문구에서 안전 보장 표현 제거.
+- 검증: `npm run build`, `tests/session-safety.mjs`, `tests/offline-configuration-audit.mjs`, `tests/accounts-form.mjs` 통과. 실제 계정·네이버 접속·VM 테스트는 하지 않았습니다.
+- 미확정: 네이버 보호조치의 직접 원인. getter `toString()`은 "() => false"로 보입니다(이전 배포본과 동일, 의도적으로 더 덮지 않음).
+
 # v0.9.5 — 로그인 확인 지연 처리 및 열린 Chrome 유지
 
 - 작업 시작 시 로그인 표시를 최대 8초 기다립니다. 쿠키만으로 로그인 성공 처리하지 않습니다.

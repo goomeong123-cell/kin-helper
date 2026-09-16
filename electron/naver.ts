@@ -1,4 +1,5 @@
 import { BrowserWindow, session, clipboard, app } from 'electron';
+import { proxyFor } from './network-config';
 
 /**
  * 네이버 지식인 자동화 레이어.
@@ -23,228 +24,18 @@ export interface AccountProxy {
 
 export const QUESTION_LIST_URL = 'https://kin.naver.com/qna/questionList.naver';
 
-// 네이버에 "일반 크롬"으로 보이도록 위장하는 User-Agent (Electron/앱 흔적 제거).
-// 중요: UA 문자열의 크롬 버전을 실제 엔진(Chromium) 버전과 맞춰야 client hints(sec-ch-ua)와
-// 어긋나지 않는다. Electron이 심는 Chromium 버전을 그대로 사용.
-const CHROME_VER = (process.versions.chrome || '130.0.0.0').replace(/^(\d+\.\d+\.\d+\.\d+).*/, '$1');
-const CHROME_MAJOR = CHROME_VER.split('.')[0];
-const CHROME_UA = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_VER} Safari/537.36`;
-
-// 실제 크롬의 client-hint 값 (Electron은 "Google Chrome" 브랜드가 빠져 있어 봇으로 탐지됨 → 주입)
-const SEC_CH_UA = `"Chromium";v="${CHROME_MAJOR}", "Google Chrome";v="${CHROME_MAJOR}", "Not?A_Brand";v="99"`;
-const SEC_CH_UA_FULL = `"Chromium";v="${CHROME_VER}", "Google Chrome";v="${CHROME_VER}", "Not?A_Brand";v="99.0.0.0"`;
-
-// 매 페이지 로드 시 실행돼 navigator를 진짜 크롬처럼 위장하는 스크립트.
-// userAgentData.brands는 getter가 non-configurable이라, 객체를 통째로 교체해야 'Google Chrome'이 들어감(실측 확인).
-const STEALTH_JS = `
-(function () {
-  try {
-    var brands = [
-      { brand: 'Not?A_Brand', version: '99' },
-      { brand: 'Chromium', version: '${CHROME_MAJOR}' },
-      { brand: 'Google Chrome', version: '${CHROME_MAJOR}' }
-    ];
-    var fvl = [
-      { brand: 'Not?A_Brand', version: '99.0.0.0' },
-      { brand: 'Chromium', version: '${CHROME_VER}' },
-      { brand: 'Google Chrome', version: '${CHROME_VER}' }
-    ];
-    var cp = function (a) { return a.map(function (b) { return { brand: b.brand, version: b.version }; }); };
-
-    // 덮어쓴 함수가 '네이티브 함수'처럼 보이게 위장한다.
-    // (그냥 덮어쓰면 fn.toString()이 "function () {}"로 나와서 봇 탐지에 바로 걸림)
-    var _origToString = Function.prototype.toString;
-    var _masked = new WeakMap();
-    var _patchedToString = function toString() {
-      var n = _masked.get(this);
-      if (n) return 'function ' + n + '() { [native code] }';
-      return _origToString.call(this);
-    };
-    _masked.set(_patchedToString, 'toString');
-    try {
-      Object.defineProperty(Function.prototype, 'toString', {
-        value: _patchedToString, writable: true, configurable: true
-      });
-    } catch (e) {}
-    var mask = function (fn, name) { try { _masked.set(fn, name); } catch (e) {} return fn; };
-
-    // navigator 속성은 인스턴스가 아니라 Navigator.prototype에 정의해야 한다.
-    // (진짜 크롬은 프로토타입 getter → 인스턴스에 own property가 없음.
-    //  인스턴스에 직접 정의하면 getOwnPropertyDescriptor로 위조가 드러난다)
-    var defineOnNavigator = function (key, getter) {
-      var target = Object.getPrototypeOf(navigator) || navigator;
-      try {
-        Object.defineProperty(target, key, { get: getter, enumerable: true, configurable: true });
-        if (Object.getOwnPropertyDescriptor(navigator, key)) {
-          try { delete navigator[key]; } catch (e2) {}
-        }
-        return true;
-      } catch (e) {
-        try { Object.defineProperty(navigator, key, { get: getter, configurable: true }); } catch (e3) {}
-        return false;
-      }
-    };
-
-    if (navigator.userAgentData) {
-      // 평범한 객체로 바꾸면 Object.prototype.toString.call()이 [object Object]가 되어 위조가 드러난다.
-      // 원래 프로토타입을 유지한 객체를 만들어 [object NavigatorUAData] / instanceof 를 그대로 보존.
-      var _proto = Object.getPrototypeOf(navigator.userAgentData);
-      var fake = Object.create(_proto);
-      var defGet = function (obj, key, val) {
-        try { Object.defineProperty(obj, key, { get: function () { return val(); }, enumerable: true, configurable: true }); } catch (e) {}
-      };
-      defGet(fake, 'brands', function () { return cp(brands); });
-      defGet(fake, 'mobile', function () { return false; });
-      defGet(fake, 'platform', function () { return 'Windows'; });
-      var _ghev = mask(function getHighEntropyValues(h) {
-        return Promise.resolve({
-          brands: cp(brands), fullVersionList: cp(fvl), mobile: false, platform: 'Windows',
-          platformVersion: '19.0.0', architecture: 'x86', bitness: '64', model: '', uaFullVersion: '${CHROME_VER}'
-        });
-      }, 'getHighEntropyValues');
-      var _tj = mask(function toJSON() { return { brands: cp(brands), mobile: false, platform: 'Windows' }; }, 'toJSON');
-      try { Object.defineProperty(fake, 'getHighEntropyValues', { value: _ghev, writable: true, configurable: true }); } catch (e) {}
-      try { Object.defineProperty(fake, 'toJSON', { value: _tj, writable: true, configurable: true }); } catch (e) {}
-      // 반드시 Navigator.prototype에 정의한다.
-      // navigator 인스턴스에 직접 정의하면 getOwnPropertyDescriptor(navigator,...)로 위조가 드러남
-      // (진짜 크롬은 프로토타입 getter라 인스턴스에는 own property가 없다)
-      defineOnNavigator('userAgentData', function () { return fake; });
-    }
-    defineOnNavigator('languages', function () { return ['ko-KR', 'ko']; });
-
-    // window.chrome: 진짜 크롬은 일반 페이지에서 app/csi/loadTimes 를 갖는다(runtime 없음).
-    try {
-      if (!window.chrome) window.chrome = {};
-      var ch = window.chrome;
-      // 실측 확인: 진짜 크롬의 window.chrome 은 일반 사이트에서 [loadTimes, csi, app] 뿐이고
-      // runtime 은 없다. 예전엔 runtime={} 을 넣었는데 그게 오히려 실제 크롬과 달랐다.
-      try { if (ch.runtime && !Object.keys(ch.runtime).length) delete ch.runtime; } catch (e) {}
-      if (typeof ch.loadTimes !== 'function') {
-        ch.loadTimes = mask(function loadTimes() {
-          var t = (performance && performance.timing) ? performance.timing : {};
-          var nav0 = (t.navigationStart || Date.now()) / 1000;
-          return {
-            requestTime: nav0,
-            startLoadTime: nav0,
-            commitLoadTime: nav0 + 0.15,
-            finishDocumentLoadTime: nav0 + 0.4,
-            finishLoadTime: nav0 + 0.6,
-            firstPaintTime: nav0 + 0.35,
-            firstPaintAfterLoadTime: 0,
-            navigationType: 'Other',
-            wasFetchedViaSpdy: true,
-            wasNpnNegotiated: true,
-            npnNegotiatedProtocol: 'h2',
-            wasAlternateProtocolAvailable: false,
-            connectionInfo: 'h2'
-          };
-        }, 'loadTimes');
-      }
-      if (typeof ch.csi !== 'function') {
-        ch.csi = mask(function csi() {
-          var t = (performance && performance.timing) ? performance.timing : {};
-          var start = t.navigationStart || Date.now();
-          return { startE: start, onloadT: start + 600, pageT: (Date.now() - start), tran: 15 };
-        }, 'csi');
-      }
-      if (!ch.app) {
-        ch.app = {
-          isInstalled: false,
-          InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
-          RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' },
-          getDetails: mask(function getDetails() { return null; }, 'getDetails'),
-          getIsInstalled: mask(function getIsInstalled() { return false; }, 'getIsInstalled'),
-          runningState: mask(function runningState() { return 'cannot_run'; }, 'runningState')
-        };
-      }
-    } catch (e) {}
-
-    // 알림 권한: 처음 방문한 브라우저는 실제 크롬에서 'default'(아직 물어본 적 없음)이다.
-    // Electron 기본값은 'granted', 권한 핸들러로 막으면 'denied'가 되는데 둘 다
-    // "사용자가 손댄 적 없는데 이미 결정돼 있는" 비정상 상태라 봇 신호가 된다.
-    try {
-      if (typeof Notification !== 'undefined') {
-        Object.defineProperty(Notification, 'permission', {
-          get: function () { return 'default'; }, configurable: true
-        });
-      }
-    } catch (e) {}
-    // permissions.query 결과도 맞춘다 (Notification.permission과 어긋나면 그 자체가 대표적인 봇 signature).
-    // 실제 크롬 새 프로필에서 '아직 결정 안 됨(prompt)'인 권한들 — 우리는 전부 denied로 나와서 티가 난다.
-    try {
-      if (navigator.permissions && navigator.permissions.query) {
-        var PROMPT_DEFAULT = ['notifications', 'geolocation', 'camera', 'microphone',
-          'clipboard-read', 'midi', 'push', 'speaker-selection', 'display-capture'];
-        var _origQuery = navigator.permissions.query;
-        var _q = mask(function query(p) {
-          var r = _origQuery.call(navigator.permissions, p);
-          if (p && PROMPT_DEFAULT.indexOf(p.name) >= 0) {
-            return r.then(function (st) {
-              // 실제 PermissionStatus 객체를 유지한 채 state만 바꿔 위조 흔적을 남기지 않는다
-              try { Object.defineProperty(st, 'state', { get: function () { return 'prompt'; }, configurable: true }); } catch (e2) {}
-              return st;
-            });
-          }
-          return r;
-        }, 'query');
-        Object.defineProperty(navigator.permissions, 'query', { value: _q, writable: true, configurable: true });
-      }
-    } catch (e) {}
-
-    // 대화상자 무력화는 '답변 에디터가 있는 지식인'에서만 적용한다.
-    // (페이지가 alert/confirm을 띄우면 Electron 네이티브 모달이 열려 렌더러가 얼어붙고
-    //  자동발행이 멈추기 때문. 다만 로그인 페이지에서는 건드리지 않아 위조 흔적을 남기지 않는다)
-    if (/(^|\\.)kin\\.naver\\.com$/.test(location.hostname)) {
-      try { window.alert = mask(function alert() {}, 'alert'); } catch (e) {}
-      try { window.confirm = mask(function confirm() { return false; }, 'confirm'); } catch (e) {}
-      try { window.prompt = mask(function prompt() { return null; }, 'prompt'); } catch (e) {}
-      try { window.onbeforeunload = null; } catch (e) {}
-    }
-  } catch (e) {}
-})();
-`;
-
-// 세션 위장: 크롬 UA + 한국어 + client-hint 헤더를 실제 크롬 값으로 교체
-function applySessionSpoof(ses: Electron.Session) {
-  ses.setUserAgent(CHROME_UA, 'ko-KR,ko');
-  // Electron은 기본적으로 모든 권한을 허용해서 Notification.permission이 'granted'가 된다.
-  // 물어본 적도 없는데 허용 상태인 건 실제 크롬에선 불가능 → 봇 신호. 거부(=사용자가 차단)로 맞춘다.
-  try {
-    ses.setPermissionRequestHandler((_wc, _perm, cb) => cb(false));
-    ses.setPermissionCheckHandler(() => false);
-  } catch {
-    // ignore
-  }
-  try {
-    ses.webRequest.onBeforeSendHeaders((details, cb) => {
-      const h = details.requestHeaders;
-      for (const k of Object.keys(h)) {
-        const lk = k.toLowerCase();
-        if (lk === 'sec-ch-ua') h[k] = SEC_CH_UA;
-        else if (lk === 'sec-ch-ua-full-version-list') h[k] = SEC_CH_UA_FULL;
-      }
-      cb({ requestHeaders: h });
-    });
-  } catch {
-    // ignore
-  }
+// Collection windows need no device permissions. Leave browser properties and headers native.
+function restrictPermissions(ses: Electron.Session) {
+  ses.setPermissionRequestHandler((_wc, _perm, cb) => cb(false));
+  ses.setPermissionCheckHandler(() => false);
 }
 
-// 창 위장: WebRTC 실제 IP 차단 + 매 페이지 로드 시 navigator를 크롬처럼 위장 주입.
-// (CDP 디버거 방식은 일부 환경에서 hang 위험이 있어 dom-ready 주입으로 처리)
 function hardenWindow(win: BrowserWindow) {
   try {
     win.webContents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
   } catch {
     // ignore
   }
-  const inject = () => {
-    win.webContents.executeJavaScript(STEALTH_JS, true).catch(() => {});
-  };
-  win.webContents.on('dom-ready', inject);
-  win.webContents.on('did-navigate', inject);
-  win.webContents.on('did-navigate-in-page', inject);
-
   // 에디터에 글을 쓴 뒤 다른 질문으로 이동하면 페이지가 이탈 경고(beforeunload)를 띄우는데,
   // 그러면 Electron이 네이티브 모달을 열고 loadURL이 영원히 끝나지 않는다(= 자동발행 정지).
   // 항상 '이동 허용'으로 처리해 모달 자체가 뜨지 않게 한다.
@@ -319,20 +110,13 @@ app.on('login', (event, webContents, _request, authInfo, callback) => {
 
 /** 계정 전용 세션(파티션) 확보 + 프록시 연결 */
 async function getAccountSession(acc: AccountProxy) {
-  const part = `persist:kin-acc-${acc.id}`;
-  const ses = session.fromPartition(part);
-
-  if (acc.proxyHost && acc.proxyPort) {
-    const rule = `${acc.proxyHost}:${acc.proxyPort}`;
-    await ses.setProxy({ proxyRules: `http=${rule};https=${rule}` });
-    if (acc.proxyUser) {
-      proxyCredById.set(acc.id, { user: acc.proxyUser, pass: acc.proxyPass || '' });
-    }
-  } else {
-    await ses.setProxy({ proxyRules: 'direct://' });
-  }
-  // 크롬으로 위장(UA + 한국어 + client-hint 헤더). 한국 계정 fingerprint 일치.
-  applySessionSpoof(ses);
+  const proxy = proxyFor(acc);
+  const ses = session.fromPartition(`persist:kin-acc-${acc!.id}`);
+  const endpoint = proxy.server.replace('http://', '');
+  await ses.setProxy({ proxyRules: `http=${endpoint};https=${endpoint}` });
+  if (acc!.proxyUser) proxyCredById.set(acc!.id, { user: acc!.proxyUser, pass: acc!.proxyPass || '' });
+  else proxyCredById.delete(acc!.id);
+  restrictPermissions(ses);
   return ses;
 }
 
@@ -342,18 +126,13 @@ async function getAccountSession(acc: AccountProxy) {
  *   세션 탈취로 보고 계정을 끊는다. 수집은 로그인이 필요 없으므로 분리한다.
  */
 async function getProxyOnlySession(acc?: AccountProxy) {
-  const part = acc ? `persist:kin-collect-${acc.id}` : 'persist:kin-collect';
-  const ses = session.fromPartition(part);
-  if (acc?.proxyHost && acc?.proxyPort) {
-    const rule = `${acc.proxyHost}:${acc.proxyPort}`;
-    await ses.setProxy({ proxyRules: `http=${rule};https=${rule}` });
-    if (acc.proxyUser) {
-      proxyCredById.set(acc.id, { user: acc.proxyUser, pass: acc.proxyPass || '' });
-    }
-  } else {
-    await ses.setProxy({ proxyRules: 'direct://' });
-  }
-  applySessionSpoof(ses);
+  const proxy = proxyFor(acc);
+  const ses = session.fromPartition(`persist:kin-collect-${acc!.id}`);
+  const endpoint = proxy.server.replace('http://', '');
+  await ses.setProxy({ proxyRules: `http=${endpoint};https=${endpoint}` });
+  if (acc!.proxyUser) proxyCredById.set(acc!.id, { user: acc!.proxyUser, pass: acc!.proxyPass || '' });
+  else proxyCredById.delete(acc!.id);
+  restrictPermissions(ses);
   return ses;
 }
 
@@ -614,38 +393,16 @@ export async function fetchQuestionDetail(
   url: string,
   acc?: AccountProxy,
 ): Promise<{ title?: string; body?: string; askedAt?: string }> {
+  const proxy = proxyFor(acc);
   try {
-    // ★ 반드시 그 계정의 프록시로 나가야 한다.
-    //   예전엔 프록시 없이 나가서, 답변할 때마다 VM의 진짜 IP가 지식인에 찍혔다.
-    //   그러면 프록시로 IP를 갈라놔도 모든 계정이 한 기계로 묶인다.
+    const { request } = await import('playwright');
+    const ctx = await request.newContext({ proxy, ignoreHTTPSErrors: false, timeout: 20000 });
     let html: string;
-    if (acc?.proxyHost && acc?.proxyPort) {
-      const { request } = await import('playwright');
-      const ctx = await request.newContext({
-        proxy: {
-          server: `http://${acc.proxyHost}:${acc.proxyPort}`,
-          username: acc.proxyUser || undefined,
-          password: acc.proxyPass || undefined,
-        },
-        userAgent: CHROME_UA,
-        extraHTTPHeaders: { 'Accept-Language': 'ko-KR,ko;q=0.9' },
-        ignoreHTTPSErrors: true,
-        timeout: 20000,
-      });
-      try {
-        const r = await ctx.get(normalizeKinUrl(url), { timeout: 20000 });
-        if (!r.ok()) return {};
-        html = await r.text();
-      } finally {
-        await ctx.dispose().catch(() => {});
-      }
-    } else {
-      const res = await fetch(normalizeKinUrl(url), {
-        headers: { 'User-Agent': CHROME_UA, 'Accept-Language': 'ko-KR,ko;q=0.9' },
-      });
-      if (!res.ok) return {};
+    try {
+      const res = await ctx.get(normalizeKinUrl(url), { timeout: 20000 });
+      if (!res.ok()) throw new Error('HTTP request failed');
       html = await res.text();
-    }
+    } finally { await ctx.dispose(); }
     const pick = (re: RegExp) => {
       const m = re.exec(html);
       return m ? decodeEntities(m[1]).trim() : '';
@@ -667,7 +424,7 @@ export async function fetchQuestionDetail(
       askedAt: askedAt || undefined,
     };
   } catch {
-    return {};
+    throw new Error('질문 상세 조회 실패: 프록시 연결 또는 HTTPS 인증서를 확인해 주세요. 자동 재시도하지 않습니다.');
   }
 }
 

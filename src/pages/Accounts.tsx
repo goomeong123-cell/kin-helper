@@ -57,11 +57,8 @@ export default function Accounts() {
           <div className="page-title">계정·프록시</div>
           <div className="page-sub">네이버 ID마다 프록시 IP를 1:1로 연결합니다. 로그인은 각 계정 창에서 직접 하세요.</div>
           <div className="note danger" style={{ marginTop: 10, fontSize: 13, padding: '10px 12px' }}>
-            ⚠ 로그인한 창에서 <b>메일 · 페이 · 내정보</b>는 절대 열지 마세요. 이 서비스들은 낯선 기기·IP에서
-            <b> 추가 본인확인</b>을 요구하는데, 여기서 로그아웃된 것처럼 보여 재로그인을 반복하면{' '}
-            <b>계정이 보호조치로 잠깁니다.</b>
-            <br />
-            <b>지식인 · 웹툰 · 카페</b> 등 일반 서비스는 안전합니다. 로그인 확인용으로는 지식인을 이용하세요.
+            로그인 실패·추가 인증·보호조치가 표시되면 작업을 중단하고 화면 안내를 확인하세요.
+            <br />프록시·기기 진단은 측정 결과이며, 계정 안전이나 보호조치 예방을 보장하지 않습니다.
           </div>
         </div>
         <div className="btn-group">
@@ -117,11 +114,18 @@ function WarmupProgress({ account }: { account: Account }) {
           {Math.floor(elapsedH / 24)}일 {elapsedH % 24}시간 / {Math.round(totalH / 24)}일
         </b>
         <span>· 읽기 세션 {account.warmup_sessions ?? 0}회</span>
+        {!!account.warmup_today_total && (
+          <span>
+            · 오늘 {account.warmup_today_done ?? 0}/{account.warmup_today_total}회
+          </span>
+        )}
         {last != null && <span>· 마지막 {hm(last)}</span>}
         {busy ? (
           <span style={{ color: 'var(--blue-dark)', fontWeight: 700 }}>· 지금 크롬에서 읽는 중</span>
+        ) : account.warmup_rest_day ? (
+          <span>· 오늘은 쉬는 날</span>
         ) : offHours ? (
-          <span>· 밤(23~08시)엔 쉼</span>
+          <span>· 밤엔 쉼</span>
         ) : next != null ? (
           <span>· 다음 {next <= now ? '곧' : `~${hm(next)}`}</span>
         ) : (
@@ -158,11 +162,13 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
     proxy_port: account.proxy_port || '',
     proxy_user: account.proxy_user || '',
     proxy_pass: account.proxy_pass || '',
+    clear_password: false,
     naver_pw: '', // 비워두면 기존 비밀번호 유지 (화면으로는 절대 불러오지 않음)
   });
 
   async function save() {
-    await window.api.accounts.update(account.id, f);
+    const result = await window.api.accounts.update(account.id, f);
+    if (!result || 'error' in result) { toast(result && 'error' in result ? result.error : '계정을 저장하지 못했습니다.'); return; }
     setEdit(false);
     onChange();
     toast('저장됨');
@@ -190,8 +196,8 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
         leakHeaders: r.leakHeaders,
         clockSkewSec: r.clockSkewSec,
       });
-      if (r.anonymous === false) toast('⚠ 프록시가 흔적 헤더를 붙입니다 — 네이버가 프록시를 알아챕니다');
-      else toast(r.stable ? `프록시 정상 ✓ ${r.distinct?.[0]}` : `⚠ IP가 바뀝니다 (${r.distinct?.length}개)`);
+      if (r.anonymous === false) toast('검사 응답에서 전달 헤더가 발견됐습니다');
+      else toast(r.stable ? `측정 중 IP 동일 ${r.distinct?.[0]}` : `⚠ IP가 다르거나 일부 측정에 실패했습니다 (${r.distinct?.length}개)`);
     } finally {
       setCheckingIp(false);
     }
@@ -227,14 +233,14 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
           ? await window.api.accounts.login(account.id)
           : await window.api.accounts.openBrowser(account.id);
       if (!res.ok) toast(res.error || '브라우저 열기 실패');
-      else toast('브라우저를 닫았습니다 — 세션 저장됨');
+      else toast(mode === 'login' ? '로그인 확인됨 · Chrome을 닫지 않고 작업을 시작하세요.' : '브라우저를 열었습니다.');
     } finally {
       setLoggingIn(false);
     }
   }
 
   const hasProxy = !!(account.proxy_host && account.proxy_port);
-  // 워밍업: 답변 없이 지식인만 읽는 기간. 끝나면 자동으로 답변에 투입된다.
+  // 워밍업: 답변 없이 지식인만 읽는 기간. 기간 종료 후에도 답변 시작 시 로그인을 별도로 확인한다.
   const warmupEnd = account.warmup_until ? new Date(account.warmup_until).getTime() : 0;
   const warming = warmupEnd > Date.now();
   const warmupDaysLeft = warming ? Math.ceil((warmupEnd - Date.now()) / 86400000) : 0;
@@ -244,7 +250,7 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
     const until = days ? new Date(Date.now() + days * 86400000).toISOString() : '';
     await window.api.accounts.update(account.id, { warmup_until: until });
     onChange();
-    toast(days ? `워밍업 ${days}일 시작 — 이 기간엔 답변하지 않고 읽기만 합니다` : '워밍업 종료 — 답변에 투입됩니다');
+    toast(days ? `워밍업 ${days}일 시작 — 이 기간엔 답변하지 않고 읽기만 합니다` : '워밍업 종료 — 답변 시작 시 로그인 상태를 별도로 확인합니다');
   }
   async function warmupNow() {
     setWarmingNow(true);
@@ -268,7 +274,7 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
               </span>
               {!hasProxy && <span className="badge red">프록시 없음 · 로그인 차단</span>}
               {warming && (
-                <span className="badge amber" title="답변 없이 지식인만 읽는 기간. 끝나면 자동으로 답변에 투입됩니다">
+                <span className="badge amber" title="답변 없이 지식인만 읽는 기간. 기간 종료는 계정 안전성 확인을 뜻하지 않습니다">
                   워밍업 중 · {warmupDaysLeft}일 남음
                 </span>
               )}
@@ -288,16 +294,16 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
                 GPU: <b>{fpInfo.webglRenderer || '(없음)'}</b>
                 {fpInfo.vmLike ? (
                   <>
-                    <br />⚠ <b>VM/소프트웨어 GPU로 잡힙니다.</b> 이건 위장으로 고칠 게 아니라 환경 문제입니다(GPU 없는 VM).
-                    같은 VM의 카페포스터 계정이 살아있다면 네이버가 이 정도는 허용한다는 뜻이니 우선 지켜보세요.
+                    <br />⚠ <b>소프트웨어 렌더러 관련 문자열이 관측됐습니다.</b>
+                    이 결과만으로 계정 안전이나 보호조치 여부를 판단할 수 없습니다.
                   </>
                 ) : (
-                  ' · 실제 GPU ✓'
+                  ' · GPU 문자열 확인'
                 )}
                 <br />
                 코어 {fpInfo.cores ?? '?'} · 메모리 {fpInfo.memory ?? '?'}GB · 화면 {fpInfo.screen} · 캔버스 {fpInfo.canvasHash} ·{' '}
                 지문 해시 <b>{fpInfo.fingerprintHash}</b>
-                <span className="muted"> (계정마다 달라야 정상)</span>
+                <span className="muted"> (브라우저 정보 비교용 · 안전 판정 아님)</span>
                 {fpInfo.webrtcLeak && (
                   <>
                     <br />⚠ WebRTC로 프록시 밖 IP가 보입니다: {fpInfo.leakedPublicIps.join(', ')}
@@ -312,18 +318,18 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
                     ⚠ 이 프록시는 <b>자기 흔적 헤더</b>를 붙입니다 (
                     {(ipInfo.leakHeaders || []).map((h) => h.name).join(', ')})
                     <br />
-                    IP가 고정이어도 네이버는 <b>프록시 접속임을 바로 알아챕니다.</b> 익명(elite) 프록시로 교체하세요.
+                    검사 서비스가 응답한 헤더입니다. <b>네이버의 계정 판단 결과는 아닙니다.</b>
                     {(ipInfo.leakHeaders || []).some((h) => /forwarded-for|real-ip|client-ip/i.test(h.name)) && (
                       <>
                         <br />
-                        특히 이 헤더엔 <b>내 실제 IP가 담겨</b> 전달됩니다.
+                        이 헤더에는 <b>접속 경로의 IP 정보</b>가 포함될 수 있습니다.
                       </>
                     )}
                   </>
                 ) : ipInfo.stable ? (
                   <>
-                    출구 IP 고정 ✓ <b>{ipInfo.distinct[0]}</b>
-                    {ipInfo.anonymous ? ' · 익명성 정상 ✓' : ''}
+                    측정 중 출구 IP 동일 <b>{ipInfo.distinct[0]}</b>
+                    {ipInfo.anonymous ? ' · 검사한 헤더 미검출' : ''}
                     {typeof ipInfo.clockSkewSec === 'number' &&
                       (Math.abs(ipInfo.clockSkewSec) > 60 ? (
                         <>
@@ -334,14 +340,14 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
                           </span>
                         </>
                       ) : (
-                        ' · 시계 정상 ✓'
+                        ' · 측정 시 시각 차이 60초 이내'
                       ))}
                   </>
                 ) : (
                   <>
-                    ⚠ 출구 IP가 <b>{ipInfo.distinct.length}개</b>로 바뀝니다 ({ipInfo.distinct.join(', ')})
+                    ⚠ 측정이 불완전하거나 서로 다른 IP <b>{ipInfo.distinct.length}개</b>가 관측됐습니다 ({ipInfo.distinct.join(', ')})
                     <br />
-                    네이버가 세션 탈취로 보고 로그인을 끊습니다. <b>고정 IP 프록시로 교체해야 합니다.</b>
+                    <b>프록시 연결 상태를 확인하세요.</b> 이 결과만으로 로그아웃 원인을 확정할 수 없습니다.
                   </>
                 )}
               </div>
@@ -390,7 +396,7 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
                 >
                   {warmingNow ? '읽는 중…' : '지금 한 번'}
                 </button>
-                <button className="btn sm" onClick={() => setWarmup(null)} title="워밍업을 끝내고 바로 답변에 투입">
+                <button className="btn sm" onClick={() => setWarmup(null)} title="워밍업 예약을 종료합니다. 답변 시작 시 로그인을 별도로 확인합니다">
                   워밍업 종료
                 </button>
               </>
@@ -399,7 +405,7 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
                 className="btn sm"
                 onClick={() => setWarmup(3)}
                 disabled={!hasProxy}
-                title="3일간 답변 없이 지식인만 자동으로 읽습니다(이 계정 크롬·프록시로, 08~23시 90~180분마다). 로그인 전에 시작해도 됩니다 — 반나절~1일 읽은 뒤 로그인하면 '아는 기기' 로그인에 가까워집니다. 끝나면 자동 투입"
+                title="3일간 이 계정의 Chrome·프록시로 읽기 작업을 예약합니다. 로그인 상태가 불명확하거나 변경되면 중단합니다. 보호조치 예방 효과는 확인되지 않았습니다."
               >
                 워밍업 3일
               </button>
@@ -464,6 +470,7 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
             className="field"
             type="password"
             placeholder={account.has_password ? '저장돼 있음 · 바꾸려면 새로 입력' : '입력하면 로그인 시 자동으로 입력됩니다'}
+            disabled={f.clear_password}
             value={f.naver_pw}
             onChange={(e) => setF({ ...f, naver_pw: e.target.value })}
           />
@@ -471,8 +478,14 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
             이 PC에서만 풀리도록 <b>OS 암호화(Windows DPAPI)로 저장</b>됩니다. 평문으로 저장하지 않고, 화면으로 다시 불러오지도 않습니다.
             <br />
             로그인할 때 <b>쿠키가 없을 때만 1회</b> 자동 입력합니다. 캡차·2차인증·보호조치가 뜨면 즉시 멈추고 창을 넘겨드립니다.
-            {account.has_password && ' (지우려면 빈 칸으로 두고 저장하지 말고, 아무 글자나 지운 뒤 저장하면 삭제됩니다)'}
+            <br />빈칸으로 저장하면 기존 비밀번호가 유지됩니다.
           </div>
+          {account.has_password && (
+            <label className="muted">
+              <input type="checkbox" checked={f.clear_password} onChange={(e) => setF({ ...f, clear_password: e.target.checked, naver_pw: '' })} />
+              저장된 비밀번호 삭제 (저장 버튼을 누르면 적용)
+            </label>
+          )}
         </div>
         <div>
           <label className="label">일일 답변 한도</label>

@@ -14,7 +14,7 @@ import {
   normalizeKinUrl,
 } from './naver';
 export { getAccountContext, closeAccountContext, closeAllKinContexts } from './pwlogin';
-import { readAuthState, requireAuthenticated } from './session-auth';
+import { readAuthState, requireAuthenticated, waitForAuth, assertWarmupAuth, AUTH_STOP } from './session-auth';
 
 const rnd = (a: number, b: number) => a + Math.floor(Math.random() * (b - a));
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -513,70 +513,181 @@ export async function pwFingerprintDiag(ctx: BrowserContext): Promise<Fingerprin
 }
 
 
+/** 워밍업 세션 유형 — 사람이 지식인에 들르는 세 가지 결 */
+export type WarmupKind = 'skim' | 'read' | 'search';
+
+/** 이번 세션을 어떤 결로 할지 뽑는다 (키워드가 없으면 검색형은 제외) */
+export function pickWarmupKind(hasKeyword: boolean): WarmupKind {
+  const r = Math.random();
+  if (r < 0.35) return 'skim';
+  if (r < 0.8 || !hasKeyword) return 'read';
+  return 'search';
+}
+
+/** 한 질문을 '읽는' 동작 — 글 길이에 맞춰 체류 시간을 정한다 (짧은 글은 빨리 나간다) */
+async function dwellOnQuestion(page: Page, check: (page: Page) => Promise<void>): Promise<void> {
+  const chars = (await page
+    .evaluate('(document.body && document.body.innerText || "").length')
+    .catch(() => 900)) as number;
+  // 한국어 묵독 대략 초당 8~14자 + 딴짓. 최소 6초, 최대 100초.
+  const speed = 8 + Math.random() * 6;
+  const total = Math.max(6000, Math.min(100000, (Number(chars) || 900) / speed * 1000));
+  const steps = rnd(2, 7);
+  for (let i = 0; i < steps; i++) {
+    await check(page);
+    await page.mouse.wheel(0, rnd(180, 620)).catch(() => {});
+    await sleep(Math.round((total / steps) * (0.6 + Math.random() * 0.8)));
+  }
+  // 다 읽고 잠깐 멈칫 (가끔 위로 다시 올려본다)
+  if (Math.random() < 0.35) {
+    await check(page);
+    await page.mouse.wheel(0, -rnd(200, 700)).catch(() => {});
+    await human(1500, 5000);
+  }
+  await human(2000, 9000);
+}
+
+/** 목록에서 질문 하나를 실제로 클릭해 새 탭에서 읽고 닫는다 */
+async function readOneFromList(ctx: BrowserContext, page: Page, topN: number, check: (page: Page) => Promise<void>): Promise<boolean> {
+  await check(page);
+  const links = page.locator('#questionAll a[href*="docId="]');
+  const count = await links.count().catch(() => 0);
+  if (!count) return false;
+  const link = links.nth(rnd(0, Math.min(count, topN)));
+  await link.scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
+  await human(700, 2400); // 제목 읽고
+  const [tab] = await Promise.all([
+    ctx.waitForEvent('page', { timeout: 12000 }).catch(() => null),
+    link.click({ timeout: 8000 }).catch(() => {}),
+  ]);
+  const q = tab || page;
+  await q.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
+  await check(q);
+  await dwellOnQuestion(q, check);
+  await check(q);
+  if (tab) {
+    await tab.close().catch(() => {});
+    await human(1500, 6000);
+  }
+  return true;
+}
+
 /**
  * 워밍업 세션 — 로그인한 그 크롬으로 사람처럼 지식인을 '읽기만' 한다. 답변은 절대 하지 않는다.
- * 목적: 네이버 서버에 "읽기만 하는 평범한 사용자"의 행동 이력을 쌓는 것 (카페포스터 warmup.ts 와 동일 원리).
- * 스크롤은 진짜 마우스 휠, 질문은 목록에서 진짜 클릭(새 탭) → 체류 → 닫기. 한 세션 3~6분.
+ * 읽기 동작을 예약 실행한다. 보호조치 예방 효과는 확인되지 않았다.
+ *
+ * 세션마다 결이 달라진다:
+ *   skim   — 목록만 훑고 나감 (질문 0~1개, 짧게)
+ *   read   — 질문 2~4개를 깊게 읽음
+ *   search — 키워드로 검색해 보고 1~3개 읽음
+ * 스크롤은 진짜 마우스 휠, 질문은 목록에서 진짜 클릭(새 탭), 체류는 글 길이에 비례.
  */
 export async function runWarmupSession(
   ctx: BrowserContext,
   onStep?: (s: string) => void,
-): Promise<{ opened: number; suspended: string | null }> {
+  opts?: { keywords?: string[] },
+): Promise<{ opened: number; kind: WarmupKind; suspended: string | null }> {
   const page = await firstPage(ctx);
+  const keywords = (opts?.keywords || []).filter(Boolean);
+  const kind = pickWarmupKind(keywords.length > 0);
   let opened = 0;
+  // Establish state on a real page, never classify a new about:blank tab as signed out.
+  await page.goto('https://www.naver.com/', { waitUntil: 'domcontentloaded', timeout: 40000 });
+  const initial = await waitForAuth(ctx, page, 8000);
+  const check = async (target: Page) => {
+    if (await pwDetectSuspension(ctx)) throw new Error(AUTH_STOP + ' 보호조치 의심 화면 — 워밍업 중단');
+    const current = await waitForAuth(ctx, target, 1500);
+    assertWarmupAuth(current, initial);
+  };
+  assertWarmupAuth(initial);
+  await check(page);
 
-  // 가끔은 네이버 메인부터 들르는 게 사람답다
-  if (Math.random() < 0.4) {
+  // 가끔은 네이버 메인부터 들어온다 (사람은 늘 지식인 주소를 바로 치지 않는다)
+  if (Math.random() < 0.45) {
     onStep?.('네이버 메인 둘러보기');
-    await page.goto('https://www.naver.com/', { waitUntil: 'domcontentloaded', timeout: 40000 }).catch(() => {});
-    await human(3000, 8000);
-    await page.mouse.wheel(0, rnd(300, 900)).catch(() => {});
-    await human(2000, 6000);
+    await page.goto('https://www.naver.com/', { waitUntil: 'domcontentloaded', timeout: 40000 });
+    await check(page);
+    await human(2500, 9000);
+    for (let i = 0, n = rnd(1, 4); i < n; i++) {
+      await check(page);
+      await page.mouse.wheel(0, rnd(250, 950)).catch(() => {});
+      await human(1500, 6000);
+    }
   }
 
-  onStep?.('지식인 답변대기 목록 둘러보기');
-  await page.goto(QUESTION_LIST_URL, { waitUntil: 'domcontentloaded', timeout: 40000 }).catch(() => {});
-  await human(2500, 5000);
+  onStep?.(kind === 'search' ? '지식인에서 검색해 보기' : '지식인 답변대기 목록 둘러보기');
+  await page.goto(QUESTION_LIST_URL, { waitUntil: 'domcontentloaded', timeout: 40000 });
+  await check(page);
+  await human(2000, 5500);
+  await check(page);
   await realClick(page, '#contentsOfMain', ACTIVATE_TAB_JS);
-  await human(2000, 4000);
-  for (let i = 0, n = rnd(2, 5); i < n; i++) {
-    await page.mouse.wheel(0, rnd(250, 700)).catch(() => {});
-    await human(2500, 7000);
+  await human(1500, 4000);
+
+  // 검색형: 관심 키워드를 사람처럼 한 글자씩 쳐서 찾아본다
+  await check(page);
+  if (kind === 'search') {
+    const kw = keywords[rnd(0, keywords.length)];
+    onStep?.(`'${kw}' 검색해 보는 중`);
+    let typed = false;
+    try {
+      const input = page.locator('#questionAll input._search_input').first();
+      if (await input.count()) {
+        await input.click({ timeout: 6000 });
+        await sleep(rnd(250, 900));
+        await input.fill('');
+        await page.keyboard.type(kw, { delay: rnd(70, 190) });
+        await sleep(rnd(300, 1200));
+        typed = true;
+      }
+    } catch {
+      // 아래 JS 폴백
+    }
+    await check(page);
+    if (typed) {
+      const searched = await realClick(page, '#questionAll a._search_button');
+      if (!searched) await page.keyboard.press('Enter').catch(() => {});
+    } else {
+      await page.evaluate(searchInPageJS(kw)).catch(() => {});
+    }
+    await human(2500, 5000);
   }
 
-  // 질문 2~4개를 열어서 읽는다 (읽기만)
-  for (let i = 0, n = rnd(2, 5); i < n; i++) {
-    const links = page.locator('#questionAll a[href*="docId="]');
-    const count = await links.count().catch(() => 0);
-    if (!count) break;
-    const link = links.nth(rnd(0, Math.min(count, 12)));
-    await link.scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
-    await human(800, 2000); // 제목 읽고
-    const [tab] = await Promise.all([
-      ctx.waitForEvent('page', { timeout: 12000 }).catch(() => null),
-      link.click({ timeout: 8000 }).catch(() => {}),
-    ]);
-    const q = tab || page;
-    await q.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
-    onStep?.(`질문 읽는 중 (${i + 1})`);
-    for (let k = 0, m = rnd(2, 6); k < m; k++) {
-      await q.mouse.wheel(0, rnd(200, 600)).catch(() => {});
-      await human(3000, 10000);
+  // 목록 훑기 — 유형마다 훑는 양이 다르다
+  const scrolls = kind === 'skim' ? rnd(3, 9) : rnd(2, 5);
+  for (let i = 0; i < scrolls; i++) {
+    await check(page);
+    await page.mouse.wheel(0, rnd(220, 780)).catch(() => {});
+    await human(2000, 8000);
+    // 훑다가 가끔 위로 되돌아간다
+    if (Math.random() < 0.2) {
+      await check(page);
+      await page.mouse.wheel(0, -rnd(150, 500)).catch(() => {});
+      await human(1200, 4000);
     }
-    await human(5000, 20000); // 다 읽고 잠깐
+  }
+
+  // 질문 열어 읽기 — 유형별 개수
+  const toRead = kind === 'skim' ? rnd(0, 2) : kind === 'search' ? rnd(1, 4) : rnd(2, 5);
+  for (let i = 0; i < toRead; i++) {
+    onStep?.(`질문 읽는 중 (${i + 1}/${toRead})`);
+    const ok = await readOneFromList(ctx, page, kind === 'search' ? 8 : 12, check);
+    if (!ok) break;
     opened++;
-    if (tab) {
-      await tab.close().catch(() => {});
-      await human(2000, 5000);
+  }
+
+  // 가끔 다음 페이지도 넘겨본다 (훑기형이 더 자주)
+  if (Math.random() < (kind === 'skim' ? 0.5 : 0.25)) {
+    await check(page);
+    await realClick(page, '#questionAll a._nextPage, a._nextPage');
+    await human(2500, 9000);
+    if (Math.random() < 0.5) {
+      await check(page);
+      await page.mouse.wheel(0, rnd(250, 800)).catch(() => {});
+      await human(2000, 7000);
     }
   }
 
-  // 가끔 다음 페이지도 한 번 넘겨본다
-  if (Math.random() < 0.3) {
-    await realClick(page, '#questionAll a._nextPage, a._nextPage');
-    await human(3000, 8000);
-  }
-
+  await check(page);
   const suspended = await pwDetectSuspension(ctx);
-  return { opened, suspended };
+  return { opened, kind, suspended };
 }

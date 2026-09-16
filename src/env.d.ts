@@ -37,6 +37,10 @@ export interface Account {
   warmup_busy?: boolean;
   /** 다음 세션 예정 시각(ms) */
   warmup_next_at?: number | null;
+  /** 오늘 계획된 세션 수 / 그중 완료한 수 / 오늘은 쉬는 날인지 */
+  warmup_today_total?: number;
+  warmup_today_done?: number;
+  warmup_rest_day?: boolean;
   created_at: string;
 }
 
@@ -88,7 +92,7 @@ export interface Api {
   accounts: {
     list: () => Promise<Account[]>;
     create: (naverId: string) => Promise<{ ok: boolean; account?: Account; error?: string }>;
-    update: (id: number, fields: Record<string, unknown>) => Promise<Account>;
+    update: (id: number, fields: Record<string, unknown>) => Promise<Account | { error: string } | null>;
     remove: (id: number) => Promise<boolean>;
     login: (id: number) => Promise<{ ok: boolean; error?: string }>;
     openBrowser: (id: number) => Promise<{ ok: boolean; error?: string }>;

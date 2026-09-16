@@ -21,6 +21,7 @@ import {
   type PostMode,
 } from './naver';
 import { loginWithRealChrome, checkProxyExitIp, hasOpenAccountContext } from './pwlogin';
+import { proxyFor } from './network-config';
 import { requireAuthenticated } from './session-auth';
 import { decryptSecret, encryptSecret, hasSecret, isEncryptionAvailable } from './secret';
 import {
@@ -176,7 +177,7 @@ export function registerIpc(ipcMain: IpcMain) {
         has_password: hasSecret(naver_pw),
         // 워밍업 진행 표시용 (메모리 상태)
         warmup_busy: warmupBusy === r.id,
-        warmup_next_at: warmupNextAt.get(r.id) ?? null,
+        ...warmupPlanInfo(r),
       };
     });
   });
@@ -218,21 +219,17 @@ export function registerIpc(ipcMain: IpcMain) {
           'UPDATE accounts SET warmup_until=?, warmup_started_at=?, warmup_sessions=0, warmup_last_at=NULL WHERE id=?',
         )
         .run([on ? fields.warmup_until : null, on ? new Date().toISOString() : null, id]);
-      warmupNextAt.delete(id);
+      warmupPlan.delete(id); // 계획 초기화 → 다음 tick에서 오늘 계획을 새로 뽑는다
     }
-    // 비밀번호는 평문으로 저장하지 않는다 (OS 암호화). 빈 문자열이면 삭제.
+    // Empty/omitted input preserves the encrypted value. Deletion requires an explicit action.
     let pwToSave = cur.naver_pw ?? null;
-    if (typeof fields.naver_pw === 'string') {
-      const raw = fields.naver_pw;
-      if (raw === '') {
-        pwToSave = null;
-      } else {
-        const enc = encryptSecret(raw);
-        if (enc === null) {
-          return { error: '이 PC에서 안전한 암호화를 쓸 수 없어 비밀번호를 저장하지 않았습니다.' };
-        }
-        pwToSave = enc;
-      }
+    if (fields.clear_password === true) {
+      if (fields.naver_pw) return { error: '새 비밀번호 입력과 삭제를 동시에 선택할 수 없습니다.' };
+      pwToSave = null;
+    } else if (typeof fields.naver_pw === 'string' && fields.naver_pw !== '') {
+      const enc = encryptSecret(fields.naver_pw);
+      if (enc === null) return { error: '이 PC에서 안전한 암호화를 쓸 수 없어 비밀번호를 저장하지 않았습니다.' };
+      pwToSave = enc;
     }
     db()
       .prepare(
@@ -289,7 +286,7 @@ export function registerIpc(ipcMain: IpcMain) {
         .all([id, a.proxy_host, a.proxy_port]) as any[];
       if (dup.length) {
         pushLog(
-          `[${a.naver_id}] ⚠ 같은 프록시를 쓰는 계정이 또 있습니다: ${dup.map((d) => d.naver_id).join(', ')} — 계정이 서로 묶입니다`,
+          `[${a.naver_id}] ⚠ 같은 프록시를 쓰는 계정이 또 있습니다: ${dup.map((d) => d.naver_id).join(', ')} — 설정을 확인해 주세요`,
         );
       }
     } catch {
@@ -302,14 +299,14 @@ export function registerIpc(ipcMain: IpcMain) {
       return { ok: false, error: r.error };
     }
     pushLog(
-      `[${a.naver_id}] 프록시 IP ${r.stable ? '고정 ✓ ' + r.distinct[0] : '⚠ 변동함: ' + r.distinct.join(', ')}`,
+      `[${a.naver_id}] 프록시 IP ${r.stable ? '측정 중 동일 ' + r.distinct[0] : '측정 불완전 또는 IP 변동: ' + r.distinct.join(', ')}`,
     );
     if (r.anonymous === false) {
       pushLog(
         `[${a.naver_id}] ⚠ 프록시가 흔적 헤더를 붙임: ${(r.leakHeaders || []).map((h) => h.name).join(', ')}`,
       );
     } else if (r.anonymous === true) {
-      pushLog(`[${a.naver_id}] 프록시 익명성 정상 ✓ (흔적 헤더 없음)`);
+      pushLog(`[${a.naver_id}] 검사 응답에서 전달 헤더 미검출`);
     }
     if (typeof r.clockSkewSec === 'number' && Math.abs(r.clockSkewSec) > 60) {
       pushLog(`[${a.naver_id}] ⚠ VM 시계가 실제보다 ${r.clockSkewSec}초 어긋남 — 세션 끊김 원인이 될 수 있음`);
@@ -364,6 +361,9 @@ export function registerIpc(ipcMain: IpcMain) {
         const a = db().prepare('SELECT * FROM accounts WHERE id = ?').get([opts.accountId]) as any;
         if (a) account = accountToProxy(a);
       }
+
+      try { proxyFor(account); }
+      catch (e) { return { ok: false, inserted: 0, error: e instanceof Error ? e.message : '프록시 설정을 확인해 주세요.' }; }
 
       // 수집 목표 개수
       const targetTotal = Math.max(1, Math.min(500, Math.floor(Number(opts.limit ?? getS('collect_count') ?? 20)) || 20));
@@ -429,12 +429,15 @@ export function registerIpc(ipcMain: IpcMain) {
           if (brandInserted >= plan.quota) break;
           const need = plan.quota - brandInserted;
           // 제외 키워드로 빠지는 걸 감안해 목표보다 조금 더 긁어옴(버퍼)
-          const found = await collectQuestions({
+          let found: Awaited<ReturnType<typeof collectQuestions>>;
+          try { found = await collectQuestions({
             keyword: kw || undefined,
             account,
             limit: need + 5,
             isNew,
-          });
+          }); } catch (e) {
+            return { ok: false, inserted, error: e instanceof Error ? e.message : '질문 수집에 실패했습니다.' };
+          }
           scannedCount += getLastScanCount();
           if (kw) usedKeywords.push(kw);
           for (const q of found) {
@@ -450,8 +453,8 @@ export function registerIpc(ipcMain: IpcMain) {
               try {
                 const d = await fetchQuestionDetail(q.url, account);
                 askedAt = d.askedAt || null;
-              } catch {
-                // ignore
+              } catch (e) {
+                return { ok: false, inserted, error: e instanceof Error ? e.message : '질문 상세 조회에 실패했습니다.' };
               }
             }
             const r = ins.run([
@@ -568,11 +571,11 @@ export function registerIpc(ipcMain: IpcMain) {
     let questionTitle = q.title;
     let questionBody = q.content || '';
     try {
-      const detail = preloaded ?? (await fetchQuestionDetail(q.url, detailProxy));
+      const detail = preloaded ?? (detailProxy ? await fetchQuestionDetail(q.url, detailProxy) : {});
       if (detail.title) questionTitle = detail.title;
       if (detail.body && detail.body.length > questionBody.length) questionBody = detail.body;
-    } catch {
-      // 상세 로딩 실패 시 목록 스니펫으로 진행
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : '질문 상세 조회에 실패했습니다.' };
     }
 
     const result = await generateAnswer({ systemPrompt, questionTitle, questionBody, promoText });
@@ -793,8 +796,54 @@ export function registerIpc(ipcMain: IpcMain) {
   const autoLog: string[] = [];
   // 워밍업 세션이 돌고 있는 계정 id (완전자동과 크롬을 동시에 잡지 않도록)
   let warmupBusy: number | null = null;
-  // 계정별 다음 워밍업 세션 예정 시각
-  const warmupNextAt = new Map<number, number>();
+
+  /**
+   * 계정별 '오늘의 계획' — 오늘 몇 번, 정확히 몇 시 몇 분에 들를지를 아침에 한 번 뽑는다.
+   * 핵심: 하루 구간에 방문 시각을 무작위로 흩뿌리면 간격이 저절로 지수분포(포아송)가 된다.
+   * 즉 '10분 만에 또 들어옴'과 '5시간 안 들어옴'이 자연히 섞인다 — 고정 간격보다 훨씬 사람답다.
+   */
+  type DayPlan = { day: string; times: number[]; done: number; rest: boolean };
+  const warmupPlan = new Map<number, DayPlan>();
+  const rnd = (a: number, b: number) => a + Math.floor(Math.random() * (b - a));
+
+  function makeDayPlan(): DayPlan {
+    const now = new Date();
+    const day = now.toDateString();
+    // 사람은 매일 들어오지 않는다 — 15%는 통째로 쉬는 날
+    if (Math.random() < 0.15) return { day, times: [], done: 0, rest: true };
+    // 시작·종료 시각도 매일 흔들린다 (07~10시 시작, 21~24시 끝)
+    const midnight = new Date(now);
+    midnight.setHours(0, 0, 0, 0);
+    const from = midnight.getTime() + (7 + Math.random() * 3) * 3600_000;
+    const to = midnight.getTime() + (21 + Math.random() * 3) * 3600_000;
+    const n = rnd(3, 10); // 하루 3~9회
+    const times = Array.from({ length: n }, () => from + Math.random() * (to - from)).sort((a, b) => a - b);
+    return { day, times, done: 0, rest: false };
+  }
+
+  /** 화면에 보여줄 오늘 계획 요약 (워밍업 중이 아니면 빈 값) */
+  function warmupPlanInfo(row: any) {
+    const on = !!row.warmup_until && new Date(row.warmup_until).getTime() > Date.now();
+    if (!on) return { warmup_next_at: null, warmup_today_total: 0, warmup_today_done: 0, warmup_rest_day: false };
+    const p = dayPlanFor(row.id);
+    return {
+      warmup_next_at: p.rest ? null : (p.times[p.done] ?? null),
+      warmup_today_total: p.times.length,
+      warmup_today_done: Math.min(p.done, p.times.length),
+      warmup_rest_day: p.rest,
+    };
+  }
+
+  // 오늘 계획을 얻는다 (날짜가 바뀌었으면 새로 뽑음)
+  function dayPlanFor(id: number): DayPlan {
+    const today = new Date().toDateString();
+    let p = warmupPlan.get(id);
+    if (!p || p.day !== today) {
+      p = makeDayPlan();
+      warmupPlan.set(id, p);
+    }
+    return p;
+  }
 
   // 상태를 갱신하면서 로그로도 남김 (어디서 멈추는지 화면에서 바로 보이게)
   const pushLog = (msg: string) => {
@@ -822,39 +871,42 @@ export function registerIpc(ipcMain: IpcMain) {
     warmupBusy = accountId;
     try {
       const ctx = await getAccountContext(accountToProxy(a));
-      // 로그인 전에도 돈다: 브라우저·IP에 방문 흔적(NNB 등)을 먼저 쌓아 '아는 기기에서의 로그인'에 가깝게.
+      // 로그인 전/후 읽기를 허용하되, 실제 페이지에서 인증 상태를 먼저 확인한다.
       // 로그인 후에는 계정 자체의 읽기 이력이 쌓인다. 둘 다 답변은 하지 않는다.
-      const logged = await pwIsLoggedIn(ctx);
-      pushLog(`[${a.naver_id}] ${logged ? '로그인' : '비로그인'} 워밍업 세션 시작 (읽기만)`);
-      const r = await runWarmupSession(ctx, (s) => pushLog(`[${a.naver_id}] 워밍업 · ${s}`));
+      pushLog(`[${a.naver_id}] 워밍업 시작 · 로그인 상태부터 확인합니다`);
+      // 검색형 세션에서 쓸 관심 키워드 (등록한 브랜드 키워드를 그대로 씀)
+      const kws = (db().prepare('SELECT keyword FROM keywords').all() as any[])
+        .map((k) => String(k.keyword || '').trim())
+        .filter(Boolean);
+      const r = await runWarmupSession(ctx, (s) => pushLog(`[${a.naver_id}] 워밍업 · ${s}`), { keywords: kws });
       if (r.suspended) {
         db().prepare("UPDATE accounts SET status='suspect', warmup_until=NULL WHERE id=?").run([accountId]);
         pushLog(`⛔ [${a.naver_id}] 워밍업 중 보호조치/정지 감지 — 워밍업 중단 ("${r.suspended}")`);
         return { ok: false, error: r.suspended };
       }
-      pushLog(`[${a.naver_id}] 워밍업 세션 끝 · 질문 ${r.opened}개 읽음`);
+      const kindLabel = r.kind === 'skim' ? '목록 훑기' : r.kind === 'search' ? '검색해 보기' : '깊게 읽기';
+      pushLog(`[${a.naver_id}] 워밍업 세션 끝 (${kindLabel}) · 질문 ${r.opened}개 읽음`);
       db()
         .prepare('UPDATE accounts SET warmup_sessions=warmup_sessions+1, warmup_last_at=? WHERE id=?')
         .run([new Date().toISOString(), accountId]);
       return { ok: true };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      pushLog(`[${a.naver_id}] 워밍업 오류: ${msg}`);
+      // Stop scheduled retries after any failure; the user can review and restart.
+      db().prepare('UPDATE accounts SET warmup_until=NULL WHERE id=?').run([accountId]);
+      warmupPlan.delete(accountId);
+      pushLog(`[${a.naver_id}] 워밍업 오류: ${msg} · 예약을 해제했습니다. 확인 후 다시 시작해 주세요.`);
       return { ok: false, error: msg };
     } finally {
       await closeAccountContext(accountId).catch(() => {});
       warmupBusy = null;
-      // 다음 세션은 90~180분 뒤 (사람이 하루에 몇 번 들르는 정도)
-      warmupNextAt.set(accountId, Date.now() + (90 + Math.random() * 90) * 60 * 1000);
     }
   }
 
-  // 3분마다: 워밍업 중인 계정 중 예정 시각이 지난 계정 하나를 골라 세션 실행. 08~23시만.
-  // ponytail: 계정 하나씩 순차 실행 — 크롬 창 하나만 뜨게. 계정이 많아 하루 세션이 부족하면 간격을 줄일 것.
+  // 1분마다: 오늘 계획에서 시각이 된 계정 하나를 골라 세션 실행.
+  // ponytail: 계정 하나씩 순차 실행 — 크롬 창 하나만 뜨게. 계정이 많아 세션이 밀리면 간격을 줄일 것.
   setInterval(() => {
     if (autoRunning || warmupBusy != null || foregroundBusy || hasOpenAccountContext()) return;
-    const h = new Date().getHours();
-    if (h < 8 || h >= 23) return;
     const rows = db()
       .prepare("SELECT id FROM accounts WHERE warmup_until IS NOT NULL AND status='active' AND proxy_host IS NOT NULL")
       .all() as any[];
@@ -864,17 +916,21 @@ export function registerIpc(ipcMain: IpcMain) {
         // 기간 끝 → 투입 가능으로 전환
         const a = db().prepare('SELECT naver_id FROM accounts WHERE id=?').get([r.id]) as any;
         db().prepare('UPDATE accounts SET warmup_until=NULL WHERE id=?').run([r.id]);
-        pushLog(`✅ [${a?.naver_id}] 워밍업 기간 종료 — 이제 답변에 투입됩니다`);
+        warmupPlan.delete(r.id);
+        pushLog(`✅ [${a?.naver_id}] 워밍업 기간 종료 — 계정 안전성 확인을 뜻하지 않습니다. 답변 작업 시작 시 로그인을 별도로 확인합니다`);
         continue;
       }
-      // 처음 등록된 계정은 2~15분 뒤 첫 세션
-      if (!warmupNextAt.has(r.id)) warmupNextAt.set(r.id, now + (2 + Math.random() * 13) * 60 * 1000);
-      if (warmupNextAt.get(r.id)! <= now) {
+      const plan = dayPlanFor(r.id);
+      if (plan.rest) continue;
+      // 앱이 꺼져 있던 동안 지나간 예정은 버린다 (켜자마자 몰아서 들어가지 않게)
+      while (plan.done < plan.times.length && plan.times[plan.done] < now - 60 * 60 * 1000) plan.done++;
+      if (plan.done < plan.times.length && plan.times[plan.done] <= now) {
+        plan.done++;
         runWarmupOnce(r.id).catch(() => {});
         return;
       }
     }
-  }, 3 * 60 * 1000);
+  }, 60 * 1000);
 
   ipcMain.handle('accounts:warmupNow', (_e, id: number) => runWarmupOnce(id));
 
@@ -952,7 +1008,7 @@ export function registerIpc(ipcMain: IpcMain) {
     const ready = proxied.filter((a) => !inWarmup(a.id));
     const warming = proxied.length - ready.length;
     if (!ready.length) {
-      return { ok: false, error: '선택한 계정이 모두 워밍업 중입니다. 워밍업이 끝나면(계정·프록시 탭) 투입됩니다.' };
+      return { ok: false, error: '선택한 계정이 모두 워밍업 중입니다. 기간 종료 후 작업 시작 시 로그인을 별도로 확인합니다.' };
     }
     const skipped = accs.length - proxied.length;
     const useIds = ready.map((a) => a.id as number);
