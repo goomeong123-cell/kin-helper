@@ -863,7 +863,7 @@ export function registerIpc(ipcMain: IpcMain) {
   // 워밍업 중인 계정인지 (warmup_until 이 미래면 아직 답변 금지)
   // 워밍업 기능 스위치 — 기본 꺼짐.
   // 근거: 운영 중인 카페포스터는 같은 프록시·같은 출처 계정 18개를 워밍업 없이 정상 운영 중이고,
-  // 워밍업만 돌린 계정(TEST2, 답변 0·수동 조작 0)이 보호조치를 받은 실사례가 있다. 예방 효과는 확인된 바 없다.
+  // 워밍업만 돌린 계정(ghdwlgud0, 답변 0·수동 조작 0)이 보호조치를 받은 실사례가 있다. 예방 효과는 확인된 바 없다.
   const warmupOn = () => {
     try {
       return (db().prepare("SELECT value FROM settings WHERE key='warmup_enabled'").get() as any)?.value === '1';
