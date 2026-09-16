@@ -1,7 +1,25 @@
 import type { BrowserContext } from 'playwright';
 
+/**
+ * 만료 없는(세션) 네이버 쿠키에 30일 만료일을 붙여 디스크에 남긴다. 값은 그대로 — 서버는 만료일을 볼 수 없다.
+ * Chrome은 세션 쿠키를 종료 시 버리므로, 이걸 안 하면 업데이트·재시작마다 로그아웃 → 재로그인 → 보호조치 위험.
+ * 반환: 다시 쓴 쿠키 수. (tests/session-persist.mjs)
+ */
+export async function persistSessionCookies(ctx: BrowserContext): Promise<number> {
+  const all = await ctx.cookies();
+  const session = all.filter((c) => c.expires === -1 && /(^|\.)naver\.com$/.test(c.domain.replace(/^\./, '')));
+  if (!session.length) return 0;
+  const expires = Math.floor(Date.now() / 1000) + 30 * 24 * 3600;
+  await ctx.addCookies(session.map((c) => ({ ...c, expires })));
+  return session.length;
+}
+
 /** One pending launch or live context per account. Never log profile configuration. */
-export function createContextStore(launch: (id: number, config: string) => Promise<BrowserContext>) {
+export function createContextStore(
+  launch: (id: number, config: string) => Promise<BrowserContext>,
+  /** 닫기 직전에 한 번 실행 (세션 쿠키 영구화 등). 실패해도 닫기는 진행한다. */
+  beforeClose?: (ctx: BrowserContext) => Promise<unknown>,
+) {
   const entries = new Map<number, { config: string; pending: Promise<BrowserContext> }>();
   let shuttingDown = false;
   return {
@@ -27,7 +45,9 @@ export function createContextStore(launch: (id: number, config: string) => Promi
     async close(id: number): Promise<void> {
       const entry = entries.get(id);
       if (!entry) return;
-      await (await entry.pending).close();
+      const ctx = await entry.pending;
+      if (beforeClose) await beforeClose(ctx).catch(() => {});
+      await ctx.close();
       if (entries.get(id) === entry) entries.delete(id);
     },
     async closeAll(): Promise<void> {

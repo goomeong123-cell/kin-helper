@@ -4,7 +4,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import type { AccountProxy } from './naver';
 import { proxyFor } from './network-config';
-import { createContextStore } from './browser-contexts';
+import { createContextStore, persistSessionCookies } from './browser-contexts';
 import { readAuthState, waitForAuth, describeAuth, AUTH_STOP } from './session-auth';
 
 export function profileDirFor(accountId: number): string {
@@ -33,8 +33,13 @@ const accountContexts = createContextStore(async (_id, config) => {
   const { chromium } = await import('playwright');
   const ctx = await chromium.launchPersistentContext(profileDirFor(acc.id), buildContextOptions(acc));
   await maskWebdriver(ctx);
+  // 사용 중 네이버가 NID_SES를 '만료 없는 세션 쿠키'로 계속 재발급한다 → 2분마다 만료일을 붙여 둔다.
+  // 안 그러면 Chrome이 닫히는 순간(업데이트·종료) 사라져 다음 실행이 로그아웃이 되고,
+  // 그 재로그인이 보호조치를 부른다(실제 사례: v0.9.4 업데이트 직후).
+  const timer = setInterval(() => void persistSessionCookies(ctx).catch(() => 0), 2 * 60 * 1000);
+  ctx.on('close', () => clearInterval(timer));
   return ctx;
-});
+}, persistSessionCookies);
 
 /**
  * 유일하게 남긴 브라우저 정보 변경: navigator.webdriver.
