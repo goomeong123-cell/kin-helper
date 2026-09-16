@@ -23,7 +23,7 @@ import {
 import { loginWithRealChrome, checkProxyExitIp, hasOpenAccountContext } from './pwlogin';
 import { proxyFor } from './network-config';
 import { lookupIpLine } from './ip-line';
-import { requireAuthenticated } from './session-auth';
+import { requireAuthenticated, ensureAuthenticated } from './session-auth';
 import { decryptSecret, encryptSecret, hasSecret, isEncryptionAvailable } from './secret';
 import {
   getAccountContext,
@@ -830,7 +830,7 @@ export function registerIpc(ipcMain: IpcMain) {
 
   /** 화면에 보여줄 오늘 계획 요약 (워밍업 중이 아니면 빈 값) */
   function warmupPlanInfo(row: any) {
-    const on = !!row.warmup_until && new Date(row.warmup_until).getTime() > Date.now();
+    const on = warmupOn() && !!row.warmup_until && new Date(row.warmup_until).getTime() > Date.now();
     if (!on) return { warmup_next_at: null, warmup_today_total: 0, warmup_today_done: 0, warmup_rest_day: false };
     const p = dayPlanFor(row.id);
     return {
@@ -861,7 +861,19 @@ export function registerIpc(ipcMain: IpcMain) {
   };
 
   // 워밍업 중인 계정인지 (warmup_until 이 미래면 아직 답변 금지)
+  // 워밍업 기능 스위치 — 기본 꺼짐.
+  // 근거: 운영 중인 카페포스터는 같은 프록시·같은 출처 계정 18개를 워밍업 없이 정상 운영 중이고,
+  // 워밍업만 돌린 계정(TEST2, 답변 0·수동 조작 0)이 보호조치를 받은 실사례가 있다. 예방 효과는 확인된 바 없다.
+  const warmupOn = () => {
+    try {
+      return (db().prepare("SELECT value FROM settings WHERE key='warmup_enabled'").get() as any)?.value === '1';
+    } catch {
+      return false;
+    }
+  };
+  // 워밍업 중인 계정인지 (기능이 꺼져 있으면 항상 아님 → 답변 투입에서 제외되지 않음)
   const inWarmup = (id: number) => {
+    if (!warmupOn()) return false;
     const a = db().prepare('SELECT warmup_until FROM accounts WHERE id=?').get([id]) as any;
     return !!a?.warmup_until && new Date(a.warmup_until).getTime() > Date.now();
   };
@@ -869,6 +881,7 @@ export function registerIpc(ipcMain: IpcMain) {
   /* ---------- 워밍업: 답변 없이 사람처럼 지식인만 읽는다 (계정/프록시별) ---------- */
   // 한 세션 = 그 계정의 크롬(로그인한 프로필·프록시)으로 3~6분 읽기. 답변 절대 안 함.
   async function runWarmupOnce(accountId: number): Promise<{ ok: boolean; error?: string }> {
+    if (!warmupOn()) return { ok: false, error: '워밍업 기능이 꺼져 있습니다 (설정 탭에서 켤 수 있음).' };
     if (foregroundBusy || hasOpenAccountContext()) return { ok: false, error: '열린 Chrome 창이나 진행 중인 작업이 있어 워밍업을 시작하지 않습니다.' };
     if (autoRunning) return { ok: false, error: '완전자동 실행 중에는 워밍업을 돌리지 않습니다.' };
     if (warmupBusy != null) return { ok: false, error: '다른 계정 워밍업이 진행 중입니다.' };
@@ -913,7 +926,7 @@ export function registerIpc(ipcMain: IpcMain) {
   // 1분마다: 오늘 계획에서 시각이 된 계정 하나를 골라 세션 실행.
   // ponytail: 계정 하나씩 순차 실행 — 크롬 창 하나만 뜨게. 계정이 많아 세션이 밀리면 간격을 줄일 것.
   setInterval(() => {
-    if (autoRunning || warmupBusy != null || foregroundBusy || hasOpenAccountContext()) return;
+    if (!warmupOn() || autoRunning || warmupBusy != null || foregroundBusy || hasOpenAccountContext()) return;
     const rows = db()
       .prepare("SELECT id FROM accounts WHERE warmup_until IS NOT NULL AND status='active' AND proxy_host IS NOT NULL")
       .all() as any[];
@@ -1116,12 +1129,9 @@ export function registerIpc(ipcMain: IpcMain) {
         kinCtx = null;
         return await switchAccount();
       }
-      const authPage = kinCtx.pages()[0] || await kinCtx.newPage();
-      await authPage.goto('https://www.naver.com/', { waitUntil: 'domcontentloaded', timeout: 30000 });
-      await requireAuthenticated(kinCtx, authPage, 8000);
-      const okLogin = true;
-      if (okLogin) pushLog(`[${acc.naver_id}] 로그인 확인됨 ✓`);
-      else pushLog(`⚠ [${acc.naver_id}] 로그인 안 됨 — 계정·프록시 탭에서 로그인하세요`);
+      // 카페포스터와 동일: NID_AUT 쿠키 → 없으면 홈 한 번 띄워 갱신 후 재판정 → 그래도 없으면 중단(재로그인 안 함)
+      await ensureAuthenticated(kinCtx);
+      pushLog(`[${acc.naver_id}] 로그인 확인됨 ✓`);
       return true;
     }
 

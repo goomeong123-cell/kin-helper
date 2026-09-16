@@ -18,10 +18,8 @@ const signedIn = { ...signedOut, state: 'authenticated', hasAuth: true, hasSessi
 assert.doesNotThrow(() => assertWarmupAuth(signedOut, signedOut));
 assert.doesNotThrow(() => assertWarmupAuth(signedIn, signedIn));
 assert.throws(() => assertWarmupAuth(signedOut, signedIn), /AUTH_STOP/);
-assert.throws(() => assertWarmupAuth({ ...signedOut, hasAuth: true }), /AUTH_STOP/);
-assert.throws(() => assertWarmupAuth({ ...signedOut, state: 'unknown' }), /AUTH_STOP/);
 assert.throws(() => assertWarmupAuth(signedIn, signedOut), /AUTH_STOP/);
-console.log('PASS: warmup rejects unknown, partial/stale auth and mid-session state changes');
+console.log('PASS: warmup stops on mid-session login-state change');
 class Context extends EventEmitter {
   async close() { this.emit('close'); }
 }
@@ -60,23 +58,29 @@ try {
   await page.setContent('<a href="https://nid.naver.com/nidlogin.logout">Logout</a>');
   assert.equal(await readAuthState(ctx, page), 'authenticated');
   await requireAuthenticated(ctx, page);
+  // 카페포스터 규칙: 화면에 로그인 링크가 보여도 NID_AUT 쿠키가 있으면 로그인 (DOM 은 설명용)
   await page.setContent('<a href="https://nid.naver.com/nidlogin.login">Login</a>');
-  assert.equal(await readAuthState(ctx, page), 'signed-out');
-  await assert.rejects(requireAuthenticated(ctx, page), /AUTH_STOP/);
+  assert.equal(await readAuthState(ctx, page), 'authenticated');
+  // NID_AUT 만 있고 NID_SES 없음 → 로그인 (v0.9.4~0.9.6 은 이걸 '확인 불가'로 멈춰 재로그인을 유도했다)
   await page.setContent('<a class="gnb_my" href="#">My account</a>');
   await ctx.clearCookies();
   await ctx.addCookies([cookies[0]]);
-  assert.equal(await readAuthState(ctx, page), 'unknown');
-  await assert.rejects(requireAuthenticated(ctx, page), /NID_SES=없음/);
+  assert.equal(await readAuthState(ctx, page), 'authenticated');
+  await requireAuthenticated(ctx, page);
   assert.ok(!describeAuth(await inspectAuth(ctx, page)).includes('synthetic-test-only'));
+  // 쿠키가 아예 없을 때만 로그아웃
+  await ctx.clearCookies();
+  await page.setContent('<a href="https://nid.naver.com/nidlogin.login">Login</a>');
+  assert.equal(await readAuthState(ctx, page), 'signed-out');
+  await assert.rejects(requireAuthenticated(ctx, page), /AUTH_STOP/);
   await ctx.addCookies(cookies);
   await page.setContent('<div>unrecognized page</div>');
-  assert.equal(await readAuthState(ctx, page), 'unknown');
+  assert.equal(await readAuthState(ctx, page), 'authenticated');
   await page.goto('https://example.test/');
-  assert.equal(await readAuthState(ctx, page), 'unknown');
+  assert.equal(await readAuthState(ctx, page), 'authenticated');
   await ctx.close();
 } finally { await browser.close(); }
-console.log('PASS: DOM authentication, stale cookies, partial cookies, missing UI, unrelated host; external requests blocked');
+console.log('PASS: cookie-first authentication (NID_AUT decides; DOM and NID_SES are informational); external requests blocked');
 
 const temp = await mkdtemp(path.join(tmpdir(), 'kin-session-test-'));
 try {
@@ -129,9 +133,10 @@ try {
     assert.equal(active.clicks, 0);
     await login.closeAllKinContexts();
     active = fixture([{ login: false, logout: false }]);
-    const unknown = await login.loginWithRealChrome({ id: 3, naverId: 'test', proxyHost: 'test.invalid', proxyPort: 1 }, undefined, 'synthetic-only');
-    assert.equal(unknown.ok, false);
+    const cookieOnly = await login.loginWithRealChrome({ id: 3, naverId: 'test', proxyHost: 'test.invalid', proxyPort: 1 }, undefined, 'synthetic-only');
+    assert.equal(cookieOnly.ok, true); // 쿠키가 있으면 화면 표시와 무관하게 로그인 — 비밀번호 입력 없음
     assert.equal(active.clicks, 0);
+    assert.deepEqual(active.gotos, ['https://www.naver.com/']); // 로그인 페이지로 가지 않음
     await login.closeAllKinContexts();
   } finally { globalThis.setTimeout = realTimeout; delete globalThis.__sessionTestLaunch; }
 } finally {
@@ -139,4 +144,4 @@ try {
   assert.ok(path.basename(temp).startsWith('kin-session-test-'));
   await rm(temp, { recursive: true, force: true });
 }
-console.log('PASS: existing session hands off without closing or logging in again, browse never logs in, unknown state refuses auto-login');
+console.log('PASS: existing session hands off without closing or logging in again, browse never logs in, cookie-only session never types a password');

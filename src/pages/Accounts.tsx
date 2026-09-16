@@ -17,9 +17,12 @@ export default function Accounts() {
   const toast = useToast();
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [newId, setNewId] = useState('');
+  // 워밍업 기능 스위치(설정 탭). 꺼져 있으면 관련 버튼·진행 표시를 숨긴다 (기본 꺼짐)
+  const [warmupFeature, setWarmupFeature] = useState(false);
 
   async function load() {
     setAccounts(await window.api.accounts.list());
+    setWarmupFeature((await window.api.settings.get('warmup_enabled')) === '1');
   }
   useEffect(() => {
     load();
@@ -81,7 +84,7 @@ export default function Accounts() {
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           {accounts.map((a) => (
-            <AccountCard key={a.id} account={a} onChange={load} />
+            <AccountCard key={a.id} account={a} onChange={load} warmupFeature={warmupFeature} />
           ))}
         </div>
       )}
@@ -136,7 +139,7 @@ function WarmupProgress({ account }: { account: Account }) {
   );
 }
 
-function AccountCard({ account, onChange }: { account: Account; onChange: () => void }) {
+function AccountCard({ account, onChange, warmupFeature }: { account: Account; onChange: () => void; warmupFeature: boolean }) {
   const toast = useToast();
   const [edit, setEdit] = useState(false);
   const [loggingIn, setLoggingIn] = useState(false);
@@ -245,7 +248,7 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
   const hasProxy = !!(account.proxy_host && account.proxy_port);
   // 워밍업: 답변 없이 지식인만 읽는 기간. 기간 종료 후에도 답변 시작 시 로그인을 별도로 확인한다.
   const warmupEnd = account.warmup_until ? new Date(account.warmup_until).getTime() : 0;
-  const warming = warmupEnd > Date.now();
+  const warming = warmupFeature && warmupEnd > Date.now();
   const warmupDaysLeft = warming ? Math.ceil((warmupEnd - Date.now()) / 86400000) : 0;
   const [warmingNow, setWarmingNow] = useState(false);
 
@@ -407,7 +410,7 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
             >
               브라우저 열기
             </button>
-            {warming ? (
+            {warmupFeature && (warming ? (
               <>
                 <button
                   className="btn sm"
@@ -430,7 +433,7 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
               >
                 워밍업 3일
               </button>
-            )}
+            ))}
             <button className="btn sm" onClick={() => setEdit(true)}>
               {hasProxy ? '수정' : '프록시 등록'}
             </button>

@@ -15,6 +15,7 @@ export default function Settings() {
   const [minInt, setMinInt] = useState(90);
   const [maxInt, setMaxInt] = useState(240);
   const [scanPages, setScanPages] = useState(3);
+  const [warmupOn, setWarmupOn] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -32,6 +33,7 @@ export default function Settings() {
       const mx = await window.api.settings.get('auto_max_interval');
       const sp = await window.api.settings.get('scan_max_pages');
       if (sp) setScanPages(Math.max(1, Math.min(10, Number(sp))));
+      setWarmupOn((await window.api.settings.get('warmup_enabled')) === '1');
       setMinInt(mn ? Number(mn) : 90);
       setMaxInt(mx ? Number(mx) : 240);
     })();
@@ -45,6 +47,7 @@ export default function Settings() {
     await window.api.settings.set('auto_min_interval', String(minInt));
     await window.api.settings.set('auto_max_interval', String(Math.max(minInt, maxInt)));
     await window.api.settings.set('scan_max_pages', String(Math.max(1, Math.min(10, scanPages))));
+    await window.api.settings.set('warmup_enabled', warmupOn ? '1' : '0');
     toast('설정 저장됨');
   }
 
@@ -159,6 +162,20 @@ export default function Settings() {
           value={scanPages}
           onChange={(e) => setScanPages(Number(e.target.value))}
         />
+      </div>
+
+      <div className="card">
+        <label className="section-title">워밍업 (실험 기능 · 기본 꺼짐)</label>
+        <div className="page-sub" style={{ marginBottom: 12 }}>
+          계정별로 며칠간 답변 없이 지식인을 자동으로 읽는 기능입니다. <b>보호조치를 막는다는 근거는 없습니다.</b>
+          <br />
+          같은 프록시·같은 출처 계정을 워밍업 없이 운영 중인 카페포스터가 정상이고, 워밍업만 돌린 계정이 보호조치를 받은 사례가 있어 기본으로 끕니다.
+          켜면 계정·프록시 탭에 워밍업 버튼과 진행 표시가 나타납니다.
+        </div>
+        <label className="chip" style={{ cursor: 'pointer' }}>
+          <input type="checkbox" checked={warmupOn} onChange={(e) => setWarmupOn(e.target.checked)} />
+          워밍업 기능 켜기
+        </label>
       </div>
 
       <div className="card">
