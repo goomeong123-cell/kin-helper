@@ -146,6 +146,7 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
     anonymous?: boolean;
     leakHeaders?: Array<{ name: string; value: string }>;
     clockSkewSec?: number | null;
+    line?: { netname: string; org: string; type: 'carrier' | 'hosting' | 'unknown' };
   } | null>(null);
   const [checkingIp, setCheckingIp] = useState(false);
   const [fpInfo, setFpInfo] = useState<{
@@ -195,7 +196,9 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
         anonymous: r.anonymous,
         leakHeaders: r.leakHeaders,
         clockSkewSec: r.clockSkewSec,
+        line: r.line,
       });
+      if (r.line?.type === 'hosting') toast('⚠ 서버 호스팅(IDC) 대역 IP입니다 — 통신사 회선 프록시로 바꾸세요');
       if (r.anonymous === false) toast('검사 응답에서 전달 헤더가 발견됐습니다');
       else toast(r.stable ? `측정 중 IP 동일 ${r.distinct?.[0]}` : `⚠ IP가 다르거나 일부 측정에 실패했습니다 (${r.distinct?.length}개)`);
     } finally {
@@ -312,7 +315,25 @@ function AccountCard({ account, onChange }: { account: Account; onChange: () => 
               </div>
             )}
             {ipInfo && (
-              <div className={`note ${ipInfo.stable && ipInfo.anonymous !== false ? '' : 'danger'}`}>
+              <div className={`note ${ipInfo.stable && ipInfo.anonymous !== false && ipInfo.line?.type !== 'hosting' ? '' : 'danger'}`}>
+                {ipInfo.line && (
+                  <>
+                    회선:{' '}
+                    {ipInfo.line.type === 'carrier' ? (
+                      <b>통신사 회선 ✓</b>
+                    ) : ipInfo.line.type === 'hosting' ? (
+                      <b>⚠ 서버 호스팅(IDC) 대역</b>
+                    ) : (
+                      <b>판별 불가</b>
+                    )}
+                    {ipInfo.line.netname ? ` (${ipInfo.line.netname})` : ''}
+                    {ipInfo.line.type === 'hosting' && (
+                      <> — 네이버가 가정용 회선과 바로 구분합니다. 판매처에 <b>KT/SK/LG 유선 또는 LTE 회선</b>인지 확인하고 교체하세요.</>
+                    )}
+                    {ipInfo.line.type === 'unknown' && ' — 대역명으로 판별되지 않았습니다. 판매처에 회선 종류를 직접 확인하세요.'}
+                    <br />
+                  </>
+                )}
                 {ipInfo.anonymous === false ? (
                   <>
                     ⚠ 이 프록시는 <b>자기 흔적 헤더</b>를 붙입니다 (

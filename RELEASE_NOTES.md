@@ -1,5 +1,6 @@
 # v0.9.6 — 위장 최소화(A안) + 워밍업 리듬 사람화 + Codex 안전 수정 통합
 
+- **[프록시 진단]에 회선 종류 표시.** 출구 IP의 공개 등록 대역명(RDAP)으로 `통신사 회선 / 서버 호스팅(IDC) 대역 / 판별 불가`를 보여줍니다. 호스팅 대역이면 빨간 경고. 조회는 공개 레지스트리에만 하며 네이버·계정과 무관합니다. (`tests/ip-line.mjs`)
 - **세션 쿠키 영구화 복구(v0.9.4에서 삭제됐던 것).** 만료 없는 네이버 세션 쿠키(`NID_SES` 등)에 2분마다·Chrome 닫기 직전 30일 만료일을 붙여 디스크에 남깁니다. 값은 바꾸지 않으며 서버는 만료일을 볼 수 없습니다. 근거: v0.9.4 업데이트 직후 Chrome 강제 종료 → 로그아웃 → 재로그인 → 보호조치가 실제로 발생. `tests/session-persist.mjs`로 재실행 후 쿠키 생존을 확인(대조군 포함).
 - **브라우저 정보 변경은 `navigator.webdriver` 마스킹 하나만 남깁니다.** Playwright가 띄운 Chrome은 실행 인자와 무관하게 `webdriver=true`로 보이는 것을 about:blank에서 실측(네이버 접속 없음)했고, 프로토타입 getter로 `false`가 되며 own-property 흔적이 없는 것도 확인했습니다. 코어/메모리/화면/UA/Client Hints 위장은 제거된 상태를 유지합니다.
 - `--enable-automation` 안내 막대만 끕니다(`ignoreDefaultArgs`). 이 인자는 webdriver 값을 바꾸지 않습니다(실측).

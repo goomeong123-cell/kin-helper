@@ -96,7 +96,7 @@ export interface Api {
     remove: (id: number) => Promise<boolean>;
     login: (id: number) => Promise<{ ok: boolean; error?: string }>;
     openBrowser: (id: number) => Promise<{ ok: boolean; error?: string }>;
-    checkProxyIp: (id: number) => Promise<{ ok: boolean; ips?: string[]; distinct?: string[]; stable?: boolean; anonymous?: boolean; leakHeaders?: Array<{ name: string; value: string }>; clockSkewSec?: number | null; error?: string }>;
+    checkProxyIp: (id: number) => Promise<{ ok: boolean; ips?: string[]; distinct?: string[]; stable?: boolean; anonymous?: boolean; leakHeaders?: Array<{ name: string; value: string }>; clockSkewSec?: number | null; line?: { ip: string; netname: string; org: string; type: 'carrier' | 'hosting' | 'unknown' }; error?: string }>;
     warmupNow: (id: number) => Promise<{ ok: boolean; error?: string }>;
     fingerprint: (id: number) => Promise<{ ok: boolean; error?: string; proxyIp?: string; ua?: string; cores?: number | null; memory?: number | null; screen?: string; timezone?: string; languages?: string; webglVendor?: string; webglRenderer?: string; canvasHash?: string; webrtcLeak?: boolean; leakedPublicIps?: string[]; vmLike?: boolean; fingerprintHash?: string }>;
   };

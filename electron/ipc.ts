@@ -22,6 +22,7 @@ import {
 } from './naver';
 import { loginWithRealChrome, checkProxyExitIp, hasOpenAccountContext } from './pwlogin';
 import { proxyFor } from './network-config';
+import { lookupIpLine } from './ip-line';
 import { requireAuthenticated } from './session-auth';
 import { decryptSecret, encryptSecret, hasSecret, isEncryptionAvailable } from './secret';
 import {
@@ -311,9 +312,15 @@ export function registerIpc(ipcMain: IpcMain) {
     if (typeof r.clockSkewSec === 'number' && Math.abs(r.clockSkewSec) > 60) {
       pushLog(`[${a.naver_id}] ⚠ VM 시계가 실제보다 ${r.clockSkewSec}초 어긋남 — 세션 끊김 원인이 될 수 있음`);
     }
+    // 출구 IP가 통신사 회선인지 서버 호스팅 대역인지 (공개 RDAP, 네이버 무관)
+    const line = r.distinct[0] ? await lookupIpLine(r.distinct[0]) : undefined;
+    if (line) {
+      const label = line.type === 'carrier' ? '통신사 회선' : line.type === 'hosting' ? '⚠ 서버 호스팅(IDC) 대역' : '회선 종류 판별 불가';
+      pushLog(`[${a.naver_id}] 출구 IP 대역: ${label}${line.netname ? ' (' + line.netname + ')' : ''}`);
+    }
     return {
       ok: true, ips: r.ips, distinct: r.distinct, stable: r.stable,
-      anonymous: r.anonymous, leakHeaders: r.leakHeaders, clockSkewSec: r.clockSkewSec,
+      anonymous: r.anonymous, leakHeaders: r.leakHeaders, clockSkewSec: r.clockSkewSec, line,
     };
   });
 
