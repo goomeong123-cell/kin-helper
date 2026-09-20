@@ -58,8 +58,13 @@ try {
   await page.setContent('<a href="https://nid.naver.com/nidlogin.logout">Logout</a>');
   assert.equal(await readAuthState(ctx, page), 'authenticated');
   await requireAuthenticated(ctx, page);
-  // 카페포스터 규칙: 화면에 로그인 링크가 보여도 NID_AUT 쿠키가 있으면 로그인 (DOM 은 설명용)
+  // 쿠키는 있는데 화면이 명백히 로그아웃(로그인 링크 O, 계정 표시 X) = 서버측 만료 → 로그아웃으로 본다
   await page.setContent('<a href="https://nid.naver.com/nidlogin.login">Login</a>');
+  assert.equal(await readAuthState(ctx, page), 'signed-out');
+  assert.equal((await inspectAuth(ctx, page)).stale, true);
+  await assert.rejects(requireAuthenticated(ctx, page), /세션 만료/);
+  // 로그인 링크와 계정 표시가 같이 보이면(일부 페이지) 로그인
+  await page.setContent('<a href="https://nid.naver.com/nidlogin.login">Login</a><a class="gnb_my" href="#">My</a>');
   assert.equal(await readAuthState(ctx, page), 'authenticated');
   // NID_AUT 만 있고 NID_SES 없음 → 로그인 (v0.9.4~0.9.6 은 이걸 '확인 불가'로 멈춰 재로그인을 유도했다)
   await page.setContent('<a class="gnb_my" href="#">My account</a>');

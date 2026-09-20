@@ -101,6 +101,11 @@ export async function loginWithRealChrome(
       onStatus?.('기존 로그인 상태를 확인했습니다. Chrome을 닫지 않고 작업을 시작하세요.');
       return { ok: true };
     }
+    // 만료된 세션의 쿠키가 남아 있으면 지운다 — 안 지우면 아래 '쿠키 폴링'이 옛 쿠키를 보고 즉시 성공으로 오판한다
+    if (initial.stale) {
+      onStatus?.('세션이 만료되어 다시 로그인합니다.');
+      for (const name of ['NID_AUT', 'NID_SES']) await ctx.clearCookies({ name }).catch(() => {});
+    }
     // 카페포스터와 동일: 로그인 페이지로 '직접' 이동 (홈에서 링크를 찾아 누르지 않는다)
     await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
     if (password) {

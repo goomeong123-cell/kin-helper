@@ -18,6 +18,8 @@ export interface AuthSnapshot {
   login: boolean;
   logout: boolean;
   readable: boolean;
+  /** 쿠키는 남아 있는데 화면은 로그아웃 — 서버에서 세션이 만료/무효화된 상태 */
+  stale?: boolean;
 }
 
 /** 쿠키만으로 판정 — 카페포스터 hasLoginCookie 와 동일 */
@@ -36,7 +38,7 @@ export async function inspectAuth(ctx: BrowserContext, page: Page): Promise<Auth
     /* 닫힌 컨텍스트 → 쿠키 없음으로 */
   }
   snap.state = classifyAuth(snap.hasAuth);
-  // 화면 표시는 설명용으로만 읽는다 (판정에 쓰지 않음)
+  // 화면 표시는 기본적으로 설명용. 단 '명백한 로그아웃 화면 + 남은 쿠키'(서버측 만료)만 판정에 반영한다.
   try {
     const u = new URL(page.url());
     if (u.protocol === 'https:' && (u.hostname === 'naver.com' || u.hostname.endsWith('.naver.com'))) {
@@ -54,6 +56,13 @@ export async function inspectAuth(ctx: BrowserContext, page: Page): Promise<Auth
       snap.login = ui.login;
       snap.logout = ui.logout;
       snap.readable = true;
+      // 화면이 '명백히' 로그아웃(로그인 링크 보임 + 계정 표시 없음)인데 쿠키만 남은 경우 = 서버측 만료.
+      // 세션 쿠키를 30일로 보존하므로(persistSessionCookies) 이 검사가 없으면 만료를 영영 못 알아챈다.
+      // 계정 표시를 못 찾았을 뿐인 화면(둘 다 없음)은 그대로 로그인으로 둔다 — v0.9.4~6 의 과잉 중단을 되풀이하지 않게.
+      if (snap.hasAuth && snap.login && !snap.logout) {
+        snap.state = 'signed-out';
+        snap.stale = true;
+      }
     }
   } catch {
     /* 이동 중이거나 닫힌 페이지 → 화면 정보 없음 */
@@ -63,7 +72,7 @@ export async function inspectAuth(ctx: BrowserContext, page: Page): Promise<Auth
 
 export function describeAuth(s: AuthSnapshot): string {
   const yn = (v: boolean) => (v ? '있음' : '없음');
-  const reason = s.hasAuth ? '로그인 확인' : '인증 쿠키(NID_AUT) 없음';
+  const reason = s.stale ? '세션 만료(쿠키는 남아 있으나 화면은 로그아웃) — 로그인 버튼으로 다시 로그인하세요' : s.hasAuth ? '로그인 확인' : '인증 쿠키(NID_AUT) 없음';
   return `${reason} | 사이트=${s.site} | NID_AUT=${yn(s.hasAuth)}, NID_SES=${yn(s.hasSession)} | 로그인표시=${yn(s.login)}, 계정표시=${yn(s.logout)} (보호조치 판정 아님)`;
 }
 
@@ -93,10 +102,9 @@ export async function requireAuthenticated(ctx: BrowserContext, page: Page, time
  */
 export async function ensureAuthenticated(ctx: BrowserContext): Promise<AuthSnapshot> {
   const page = ctx.pages()[0] ?? (await ctx.newPage());
-  let snap = await inspectAuth(ctx, page);
-  if (snap.state === 'authenticated') return snap;
+  // 항상 홈을 한 번 띄운 뒤 본다 — 빈 탭(about:blank)에서 쿠키만 보면 서버측 만료를 못 알아챈다
   await page.goto(NAVER_HOME, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
-  snap = await waitForAuth(ctx, page, 3000);
+  const snap = await waitForAuth(ctx, page, 3000);
   if (snap.state !== 'authenticated') throw new Error(AUTH_STOP + ' ' + describeAuth(snap));
   return snap;
 }
