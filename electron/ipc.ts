@@ -37,6 +37,7 @@ import {
   pwOpenQuestion,
   pwReadOpenQuestion,
   pwFingerprintDiag,
+  closeDoneTabs,
   runWarmupSession,
 } from './pwkin';
 
@@ -1147,6 +1148,9 @@ export function registerIpc(ipcMain: IpcMain) {
       // 한 번의 예외로 전체 자동발행이 멈추지 않도록 이터레이션 단위로 감쌈.
       // 오류가 나면 로그만 남기고 다음 질문으로 계속 진행.
       try {
+      // 직전 질문 탭 정리 — 관전 모드는 [다음] 이후, 건너뜀·오류 때도 여기서 닫힌다.
+      // (첫 탭·다른 사이트 탭은 그대로, 전송 중인 요청은 기다렸다 닫음 → closeDoneTabs 주석 참고)
+      await closeDoneTabs(kinCtx).catch(() => 0);
       // 현재 계정이 한도에 도달했으면 다음 계정으로 교대 (없으면 종료)
       if (!underLimit(accountId)) {
         pushLog(`[${acc.naver_id}] 하루 한도(${dailyLimit}) 도달`);

@@ -14,6 +14,8 @@ import {
   normalizeKinUrl,
 } from './naver';
 export { getAccountContext, closeAccountContext, closeAllKinContexts } from './pwlogin';
+import { closeDoneTabs } from './browser-contexts';
+export { closeDoneTabs };
 import { readAuthState, requireAuthenticated, waitForAuth, assertWarmupAuth, AUTH_STOP } from './session-auth';
 
 const rnd = (a: number, b: number) => a + Math.floor(Math.random() * (b - a));
@@ -58,16 +60,7 @@ function activePage(ctx: BrowserContext): Promise<Page> {
 }
 
 /** 목록 탭만 남기고 나머지 탭을 닫는다 (사람처럼 탭이 쌓이지 않게) */
-async function closeExtraTabs(ctx: BrowserContext): Promise<void> {
-  const ps = ctx.pages();
-  for (let i = ps.length - 1; i >= 1; i--) {
-    try {
-      await ps[i].close();
-    } catch {
-      /* ignore */
-    }
-  }
-}
+
 
 /** 로그인 여부 — 쿠키로 판정 (DOM보다 안정적) */
 export async function pwIsLoggedIn(ctx: BrowserContext): Promise<boolean> {
@@ -327,7 +320,7 @@ export async function pwAnswerQuestion(
     if (!submitted) return { typed: true, submitted: false, error: "'등록' 버튼을 찾지 못함" };
     await human(1800, 3000);
     await requireAuthenticated(ctx, page);
-    await closeExtraTabs(ctx).catch(() => {});
+    await closeDoneTabs(ctx).catch(() => 0);
     return { typed: true, submitted: true };
   } catch (e) {
     return { typed: false, submitted: false, error: e instanceof Error ? e.message : String(e) };

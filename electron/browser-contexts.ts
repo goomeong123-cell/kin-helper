@@ -14,6 +14,35 @@ export async function persistSessionCookies(ctx: BrowserContext): Promise<number
   return session.length;
 }
 
+/**
+ * 다 본 질문 탭 정리 — 사람이 글을 다 보고 탭을 닫고 목록으로 돌아가는 것과 같다.
+ * 지식인 목록의 질문 링크는 새 탭으로 열리는데, 예전엔 '자동 등록 성공' 때만 닫아서
+ * 관전 모드·건너뜀·오류 때마다 탭이 쌓였다(실사례: 수십 개 → VM 메모리 부담, 마지막 탭을 작업 탭으로 쓰는 로직이 엉뚱한 탭을 집을 위험).
+ * 안전장치:
+ *  - 첫 탭은 절대 닫지 않는다 — 마지막 탭을 닫으면 창이 닫히고 그 계정 작업이 통째로 끊긴다.
+ *  - 지식인(kin.naver.com) 탭과 빈 탭만 닫는다 — 사람이 따로 연 다른 사이트 탭은 건드리지 않는다.
+ *  - 닫기 전 그 탭의 요청이 끝나길 잠깐 기다린다 — 관전 모드에서 직접 누른 [등록]이 전송 중이면 끊기지 않게.
+ * 탭은 같은 브라우저 컨텍스트(같은 쿠키)라 닫아도 로그인 세션에는 영향이 없다. (tests/tab-cleanup.mjs)
+ */
+export async function closeDoneTabs(ctx: Pick<BrowserContext, 'pages'>): Promise<number> {
+  const ps = ctx.pages();
+  let closed = 0;
+  for (let i = ps.length - 1; i >= 1; i--) {
+    const p = ps[i];
+    let host = '';
+    try {
+      host = new URL(p.url()).hostname;
+    } catch {
+      /* about:blank 등 → 빈 탭으로 취급 */
+    }
+    if (host && host !== 'kin.naver.com') continue;
+    await p.waitForLoadState('networkidle', { timeout: 3000 }).catch(() => {});
+    await p.close().catch(() => {});
+    closed++;
+  }
+  return closed;
+}
+
 /** One pending launch or live context per account. Never log profile configuration. */
 export function createContextStore(
   launch: (id: number, config: string) => Promise<BrowserContext>,
