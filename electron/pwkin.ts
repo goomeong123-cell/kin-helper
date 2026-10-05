@@ -218,6 +218,15 @@ const SUBMIT_JS = `(function () {
   return false;
 })();`;
 
+// 입력칸이 안 열렸을 때 화면 상태(원인 추적용). 본문·아이디 등 내용은 담지 않는다.
+const EDITOR_DIAG_JS = `(function () {
+  var q = function (s) { return document.querySelectorAll(s).length; };
+  return '답변버튼=' + q('button._answerWriteButton, .endAnswerButton._answerWriteButton, ._scrollToEditor')
+    + ' 편집기틀=' + q('.se-container, .se-wrap, #smartEditor, [class*="editor"]')
+    + ' iframe=' + q('iframe')
+    + ' 로딩=' + document.readyState;
+})();`;
+
 const EDITOR_LEN_JS = `(function () {
   var u = document.querySelector('.se-module-text.__se-unit') || document.querySelector('.se-module-text');
   if (u) return u.classList.contains('se-is-empty') ? 0 : 1;
@@ -260,23 +269,42 @@ export async function pwAnswerQuestion(
     // (무엇이 세션을 끊었는지 알아야 원인을 특정할 수 있다 — 추측 금지)
     await requireAuthenticated(ctx, page);
 
-    onStep?.('답변 버튼 클릭');
-    const opened = await realClick(
-      page,
-      'button._answerWriteButton, .endAnswerButton._answerWriteButton, ._scrollToEditor',
-      OPEN_EDITOR_JS,
-    );
-    if (!opened) return { typed: false, submitted: false, error: "'답변' 버튼 없음(로그인/페이지 확인)" };
-    await human(1200, 2200);
-
-    onStep?.('입력칸 열림 대기');
+    // 답변 버튼 → 입력칸 열림. 네이버 편집기가 간헐적으로 안 그려질 때가 있어(사람이 새로고침하면 뜸),
+    // 안 열리면 사람처럼 새로고침 1회 후 다시 시도한다. 아직 아무것도 안 쳤으니 손실 없음.
     let hasEditor = false;
-    for (let i = 0; i < 12; i++) {
-      hasEditor = (await page.evaluate(HAS_EDITOR_JS).catch(() => false)) as boolean;
-      if (hasEditor) break;
-      await human(600, 1100);
+    let editorDiag = '';
+    for (let attempt = 0; attempt < 2 && !hasEditor; attempt++) {
+      if (attempt > 0) {
+        onStep?.('입력칸이 안 열려 새로고침 후 재시도');
+        await page.reload({ waitUntil: 'domcontentloaded', timeout: 40000 }).catch(() => {});
+        await human(1800, 3200);
+        await requireAuthenticated(ctx, page);
+      }
+      // 버튼 스크립트가 붙기 전에 누르면 클릭이 먹지 않는다 → 페이지 로드가 끝나길 잠깐 기다림
+      await page.waitForLoadState('load', { timeout: 10000 }).catch(() => {});
+      onStep?.('답변 버튼 클릭');
+      const opened = await realClick(
+        page,
+        'button._answerWriteButton, .endAnswerButton._answerWriteButton, ._scrollToEditor',
+        OPEN_EDITOR_JS,
+      );
+      if (!opened) {
+        editorDiag = "'답변' 버튼 없음";
+        continue;
+      }
+      await human(1200, 2200);
+      onStep?.('입력칸 열림 대기');
+      for (let i = 0; i < 12; i++) {
+        hasEditor = (await page.evaluate(HAS_EDITOR_JS).catch(() => false)) as boolean;
+        if (hasEditor) break;
+        await human(600, 1100);
+      }
+      if (!hasEditor) editorDiag = (await page.evaluate(EDITOR_DIAG_JS).catch(() => '')) as string;
     }
-    if (!hasEditor) return { typed: false, submitted: false, error: '답변 입력칸이 열리지 않음' };
+    if (!hasEditor) {
+      if (editorDiag === "'답변' 버튼 없음") return { typed: false, submitted: false, error: "'답변' 버튼 없음(로그인/페이지 확인)" };
+      return { typed: false, submitted: false, error: `답변 입력칸이 열리지 않음 (새로고침 1회 후에도) [${editorDiag}]` };
+    }
     await human(900, 1800);
 
     onStep?.('본문 입력 중');
