@@ -4,7 +4,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import type { AccountProxy } from './naver';
 import { proxyFor } from './network-config';
-import { createContextStore, persistSessionCookies } from './browser-contexts';
+import { createContextStore, persistSessionCookies, watchDialogs } from './browser-contexts';
 import { readAuthState, waitForAuth, NAVER_HOME } from './session-auth';
 
 // 카페포스터와 동일 — 로그인 페이지로 직접 간다
@@ -36,6 +36,7 @@ const accountContexts = createContextStore(async (_id, config) => {
   const { chromium } = await import('playwright');
   const ctx = await chromium.launchPersistentContext(profileDirFor(acc.id), buildContextOptions(acc));
   await maskWebdriver(ctx);
+  watchDialogs(ctx); // 네이버 알림창 문구 기록 (닫는 동작은 Playwright 기본과 동일)
   // 사용 중 네이버가 NID_SES를 '만료 없는 세션 쿠키'로 계속 재발급한다 → 2분마다 만료일을 붙여 둔다.
   // 안 그러면 Chrome이 닫히는 순간(업데이트·종료) 사라져 다음 실행이 로그아웃이 되고,
   // 그 재로그인이 보호조치를 부른다(실제 사례: v0.9.4 업데이트 직후).

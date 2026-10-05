@@ -14,8 +14,10 @@ import {
   normalizeKinUrl,
 } from './naver';
 export { getAccountContext, closeAccountContext, closeAllKinContexts } from './pwlogin';
-import { closeDoneTabs } from './browser-contexts';
+import { closeDoneTabs, dialogsSince, watchDialogs } from './browser-contexts';
 export { closeDoneTabs };
+/** 테스트 전용: 같은 모듈 인스턴스의 알림창 기록기를 쓰기 위한 재노출 */
+export { watchDialogs as __watchDialogs };
 import { readAuthState, requireAuthenticated, waitForAuth, assertWarmupAuth, AUTH_STOP } from './session-auth';
 
 const rnd = (a: number, b: number) => a + Math.floor(Math.random() * (b - a));
@@ -244,7 +246,7 @@ export async function pwAnswerQuestion(
   submit: boolean,
   onStep?: (s: string) => void,
 ): Promise<{ typed: boolean; submitted: boolean; error?: string }> {
-  const page = await activePage(ctx);
+  let page = await activePage(ctx);
   try {
     // 목록에서 클릭해 이미 그 질문에 들어와 있으면 다시 주소로 이동하지 않는다.
     const wantDoc = (/docId=(\d+)/.exec(url) || [])[1];
@@ -273,10 +275,31 @@ export async function pwAnswerQuestion(
     // 안 열리면 사람처럼 새로고침 1회 후 다시 시도한다. 아직 아무것도 안 쳤으니 손실 없음.
     let hasEditor = false;
     let editorDiag = '';
-    for (let attempt = 0; attempt < 2 && !hasEditor; attempt++) {
-      if (attempt > 0) {
+    // 원인 추적: 답변 버튼을 누른 뒤 뜬 알림창 / 실패한 요청 / 스크립트 오류를 모은다 (주소의 ?뒤·본문 내용은 담지 않음)
+    const t0 = Date.now();
+    const trouble: string[] = [];
+    const note = (x: string) => { if (trouble.length < 6 && !trouble.includes(x)) trouble.push(x); };
+    const hostPath = (u: string) => { try { const x = new URL(u); return x.hostname + x.pathname.slice(0, 40); } catch { return '?'; } };
+    const watch = (pg: Page) => {
+      pg.on('requestfailed', (r) => note(`요청실패 ${hostPath(r.url())} (${r.failure()?.errorText || '?'})`));
+      pg.on('response', (r) => { if (r.status() >= 400 && /kin\.naver|editor|smarteditor|pstatic/.test(r.url())) note(`HTTP${r.status()} ${hostPath(r.url())}`); });
+      pg.on('pageerror', (e) => note(`스크립트오류 ${String(e.message).slice(0, 80)}`));
+    };
+    watch(page);
+    for (let attempt = 0; attempt < 3 && !hasEditor; attempt++) {
+      if (attempt === 1) {
         onStep?.('입력칸이 안 열려 새로고침 후 재시도');
         await page.reload({ waitUntil: 'domcontentloaded', timeout: 40000 }).catch(() => {});
+        await human(1800, 3200);
+        await requireAuthenticated(ctx, page);
+      } else if (attempt === 2) {
+        // 카페포스터 기록: 네이버 편집기는 같은 탭 새로고침으론 안 살아나고 새 탭에서 열면 뜨는 경우가 있다(탭 단위 상태 꼬임)
+        onStep?.('새로고침으로도 안 열려 새 탭에서 다시 열기');
+        const fresh = await ctx.newPage();
+        watch(fresh);
+        await fresh.goto(normalizeKinUrl(url), { waitUntil: 'domcontentloaded', timeout: 40000 }).catch(() => {});
+        if (page !== ctx.pages()[0]) await page.close().catch(() => {}); // 첫 탭(목록 자리)은 닫지 않는다 — 다음 질문 때 정리됨
+        page = fresh;
         await human(1800, 3200);
         await requireAuthenticated(ctx, page);
       }
@@ -299,11 +322,19 @@ export async function pwAnswerQuestion(
         if (hasEditor) break;
         await human(600, 1100);
       }
-      if (!hasEditor) editorDiag = (await page.evaluate(EDITOR_DIAG_JS).catch(() => '')) as string;
+      if (!hasEditor) {
+        editorDiag = (await page.evaluate(EDITOR_DIAG_JS).catch(() => '')) as string;
+        const said = dialogsSince(ctx, t0);
+        if (said.length) onStep?.(`네이버 알림창: "${said[said.length - 1].message}"`);
+      }
     }
     if (!hasEditor) {
-      if (editorDiag === "'답변' 버튼 없음") return { typed: false, submitted: false, error: "'답변' 버튼 없음(로그인/페이지 확인)" };
-      return { typed: false, submitted: false, error: `답변 입력칸이 열리지 않음 (새로고침 1회 후에도) [${editorDiag}]` };
+      const said = dialogsSince(ctx, t0).map((d) => d.message).filter(Boolean);
+      const why =
+        (said.length ? ` 네이버 알림창: "${Array.from(new Set(said)).join(' / ')}"` : ' 알림창 없음') +
+        (trouble.length ? ` · ${trouble.join(' · ')}` : ' · 실패 요청·스크립트 오류 없음');
+      if (editorDiag === "'답변' 버튼 없음") return { typed: false, submitted: false, error: "'답변' 버튼 없음(로그인/페이지 확인)" + why };
+      return { typed: false, submitted: false, error: `답변 입력칸이 열리지 않음 (새로고침·새 탭 재시도 후에도) [${editorDiag}]${why}` };
     }
     await human(900, 1800);
 

@@ -43,6 +43,36 @@ export async function closeDoneTabs(ctx: Pick<BrowserContext, 'pages'>): Promise
   return closed;
 }
 
+/**
+ * 네이버가 띄우는 알림창(alert/confirm) 내용을 기억한다.
+ * Playwright 는 리스너가 없으면 알림창을 '즉시 자동으로 닫는다'(alert/confirm → dismiss, beforeunload → accept).
+ * 그래서 자동화 창에서는 사람이 직접 눌러도 안내 문구가 보이지 않고 "눌렀는데 아무 일도 안 일어남"처럼 보인다.
+ * 여기서는 닫는 동작은 기본과 똑같이 두고(동작 변화 없음), 무슨 문구였는지만 남긴다. (tests/dialog-watch.mjs)
+ */
+export interface SeenDialog { type: string; message: string; ts: number }
+const dialogs = new WeakMap<object, SeenDialog[]>();
+export function watchDialogs(ctx: BrowserContext, onDialog?: (d: SeenDialog) => void): void {
+  dialogs.set(ctx, []);
+  ctx.on('dialog', (d) => {
+    const seen: SeenDialog = { type: d.type(), message: (d.message() || '').trim().slice(0, 300), ts: Date.now() };
+    if (seen.type === 'beforeunload') {
+      d.accept().catch(() => {});
+      return;
+    }
+    const list = dialogs.get(ctx);
+    if (list) {
+      list.push(seen);
+      if (list.length > 20) list.shift();
+    }
+    try { onDialog?.(seen); } catch { /* 기록 실패가 작업을 막지 않게 */ }
+    d.dismiss().catch(() => {});
+  });
+}
+/** since(ms 시각) 이후에 뜬 알림창들 */
+export function dialogsSince(ctx: object, since: number): SeenDialog[] {
+  return (dialogs.get(ctx) || []).filter((d) => d.ts >= since);
+}
+
 /** One pending launch or live context per account. Never log profile configuration. */
 export function createContextStore(
   launch: (id: number, config: string) => Promise<BrowserContext>,
