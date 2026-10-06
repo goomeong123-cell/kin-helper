@@ -801,6 +801,8 @@ export function registerIpc(ipcMain: IpcMain) {
   let autoStatus = '대기';
   let autoCount = 0;
   let autoNextResolve: (() => void) | null = null;
+  // 오류로 멈춘 경우 true — 화면을 직접 확인할 수 있게 Chrome 을 닫지 않고 둔다
+  let autoErrorStop = false;
   const autoLog: string[] = [];
   // 워밍업 세션이 돌고 있는 계정 id (완전자동과 크롬을 동시에 잡지 않도록)
   let warmupBusy: number | null = null;
@@ -1039,13 +1041,15 @@ export function registerIpc(ipcMain: IpcMain) {
     pushLog(useIds.length > 1 ? `시작 중… (${useIds.length}개 계정 교대)` : '시작 중…');
     if (skipped) pushLog(`⚠ 프록시 없는 계정 ${skipped}개는 제외했습니다`);
     if (warming) pushLog(`워밍업 중인 계정 ${warming}개는 답변에서 제외했습니다`);
+    autoErrorStop = false;
     runAutopilot(useIds, opts.submit, opts.brandId, opts.useCollected)
       .catch((e) => {
         pushLog('오류: ' + (e instanceof Error ? e.message : String(e)));
       })
       .finally(async () => {
         autoNextResolve = null;
-        await closeAllKinContexts().catch(() => {});
+        // 오류로 멈췄으면 Chrome 을 그대로 둔다(어떤 화면에서 멈췄는지 확인용). 정상 종료·수동 중지는 닫는다.
+        if (!autoErrorStop) await closeAllKinContexts().catch(() => {});
         autoRunning = false;
       });
     return { ok: true };
@@ -1053,6 +1057,13 @@ export function registerIpc(ipcMain: IpcMain) {
 
   async function runAutopilot(accountIds: number[], submit: boolean, onlyBrandId?: number, useCollected?: boolean) {
     const ratio = Number(getS('promo_ratio') || '20');
+    // 오류가 나면 다음 질문으로 넘어가지 않고 전체를 멈춘다 (사용자 요청).
+    // 정상적인 건너뜀(FAQ·이미 답변한 질문·제외 키워드)은 오류가 아니므로 계속 진행한다.
+    const stopOnError = (msg: string) => {
+      autoStop = true;
+      autoErrorStop = true;
+      pushLog(`⛔ 오류로 작업을 멈췄습니다 — ${msg} (Chrome 창은 확인용으로 열어둠 · 다시 시작하려면 [시작])`);
+    };
     const rotate = accountIds.length > 1;
     let rotPtr = 0;
     // 현재 교대 중인 계정 (switchAccount가 갱신)
@@ -1146,7 +1157,7 @@ export function registerIpc(ipcMain: IpcMain) {
       if (!kinCtx) break;
 
       // 한 번의 예외로 전체 자동발행이 멈추지 않도록 이터레이션 단위로 감쌈.
-      // 오류가 나면 로그만 남기고 다음 질문으로 계속 진행.
+      // 오류가 나면 다음 질문으로 넘어가지 않고 멈춘다(stopOnError). 예외도 아래 catch 에서 같은 처리.
       try {
       // 직전 질문 탭 정리 — 관전 모드는 [다음] 이후, 건너뜀·오류 때도 여기서 닫힌다.
       // (첫 탭·다른 사이트 탭은 그대로, 전송 중인 요청은 기다렸다 닫음 → closeDoneTabs 주석 참고)
@@ -1290,9 +1301,8 @@ export function registerIpc(ipcMain: IpcMain) {
         preloaded.title || preloaded.body ? preloaded : undefined,
       )) as any;
       if (!gen.ok || !gen.answer) {
-        pushLog('생성 실패 — 다음');
-        await sleepRnd(5000, 10000);
-        continue;
+        stopOnError('답변 생성 실패: ' + String(gen.error || '원인 미상').slice(0, 160));
+        break;
       }
       if (autoStop || !kinCtx) break;
 
@@ -1366,11 +1376,15 @@ export function registerIpc(ipcMain: IpcMain) {
         if (isFaqErr) {
           pushLog('건너뜀(FAQ 권한 필요): ' + res.error);
           await sleepRnd(1500, 3000);
-        } else {
-          pushLog('작성 실패: ' + res.error);
-          await sleepRnd(6000, 12000);
+          continue;
         }
-        continue;
+        if (/이미 답변한 질문/.test(res.error)) {
+          pushLog('건너뜀: ' + res.error);
+          await sleepRnd(1500, 3000);
+          continue;
+        }
+        stopOnError('작성 실패: ' + res.error);
+        break;
       }
 
       if (submit && res.submitted) {
@@ -1418,10 +1432,10 @@ export function registerIpc(ipcMain: IpcMain) {
           pushLog(e.message);
           break;
         }
-        pushLog('이 질문 처리 중 오류 — 건너뛰고 계속: ' + (e instanceof Error ? e.message : String(e)));
-        await sleepRnd(4000, 8000);
+        stopOnError('이 질문 처리 중 오류: ' + (e instanceof Error ? e.message : String(e)));
+        break;
       }
     }
-    autoStatus = autoStop ? '중지됨' : autoStatus;
+    autoStatus = autoStop && !autoErrorStop ? '중지됨' : autoStatus;
   }
 }
