@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- 지식인 헬퍼 앱 아이콘: 앱 안 로고(파란 둥근 사각형 + 말풍선)와 같은 모양, 말풍선 안 체크 = 답변 완료 -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4C97FF"/>
+      <stop offset="1" stop-color="#1B64DA"/>
+    </linearGradient>
+  </defs>
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="url(#bg)"/>
+  <!-- 말풍선 -->
+  <path d="M136 132h240a40 40 0 0 1 40 40v136a40 40 0 0 1-40 40H254l-70 58c-8 6-18 1-18-9v-49h-30a40 40 0 0 1-40-40V172a40 40 0 0 1 40-40z" fill="#fff"/>
+  <!-- 체크 -->
+  <path d="M196 240l42 42 82-86" fill="none" stroke="#1B64DA" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
