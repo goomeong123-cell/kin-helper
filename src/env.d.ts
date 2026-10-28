@@ -140,6 +140,7 @@ export interface Api {
   auto: {
     start: (opts: { accountId?: number; accountIds?: number[]; submit: boolean; brandId?: number; useCollected?: boolean }) => Promise<{ ok: boolean; error?: string }>;
     stop: () => Promise<boolean>;
+    dailyRunNow: () => Promise<{ ok: boolean; error?: string }>;
     next: () => Promise<boolean>;
     status: () => Promise<{
       running: boolean;

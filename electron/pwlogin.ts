@@ -84,6 +84,8 @@ export async function loginWithRealChrome(
   onStatus?: (s: string) => void,
   password?: string,
   mode: 'login' | 'browse' = 'login',
+  /** 사람이 창에서 마무리하길 기다리는 최대 시간 (예약 실행은 짧게) */
+  maxWaitMs = 3 * 60 * 60 * 1000,
 ): Promise<PwLoginResult> {
   try {
     const ctx = await getAccountContext(acc);
@@ -123,7 +125,7 @@ export async function loginWithRealChrome(
     let closed = false;
     const onClose = () => { closed = true; };
     ctx.on('close', onClose);
-    const deadline = Date.now() + 3 * 60 * 60 * 1000;
+    const deadline = Date.now() + maxWaitMs;
     try {
       while (!closed && Date.now() < deadline) {
         await new Promise(r => setTimeout(r, 2000));

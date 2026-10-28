@@ -35,6 +35,32 @@ export default function Questions() {
   const [autoAccountIds, setAutoAccountIds] = useState<number[]>([]);
   // 저장된 선택 복원이 끝났는지 (끝나기 전엔 저장하지 않아 기존 선택을 덮어쓰지 않음)
   const restoredRef = useRef(false);
+  // 매일 자동 시작 (정해진 시각에 로그인 확인 → 지금 이 완전자동 설정 그대로 시작)
+  const [dailyOn, setDailyOn] = useState(false);
+  const [dailyTime, setDailyTime] = useState('09:00');
+  const [dailyRunning, setDailyRunning] = useState(false);
+  useEffect(() => {
+    (async () => {
+      setDailyOn((await window.api.settings.get('daily_auto_enabled')) === '1');
+      setDailyTime((await window.api.settings.get('daily_auto_time')) || '09:00');
+    })();
+  }, []);
+  async function saveDaily(on: boolean, time: string) {
+    setDailyOn(on);
+    setDailyTime(time);
+    await window.api.settings.set('daily_auto_enabled', on ? '1' : '0');
+    await window.api.settings.set('daily_auto_time', time || '09:00');
+    if (on) toast(`매일 ${time} 무렵 자동으로 로그인 확인 후 지금 설정 그대로 시작합니다 (앱이 켜져 있어야 함)`);
+  }
+  async function dailyRunNow() {
+    setDailyRunning(true);
+    try {
+      const r = await window.api.auto.dailyRunNow();
+      toast(r.ok ? '로그인 확인 후 자동 작업을 시작했습니다' : r.error || '자동 시작 실패');
+    } finally {
+      setDailyRunning(false);
+    }
+  }
 
   async function loadDrafts() {
     const drafts = await window.api.answers.drafts();
@@ -436,6 +462,42 @@ export default function Questions() {
             </div>
           </div>
         )}
+        {/* 매일 자동 시작 — 위 설정(작업 계정·탭·관전/등록까지·브랜드)을 그대로 쓴다 */}
+        <div
+          style={{
+            marginTop: 12,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+            flexWrap: 'wrap',
+            paddingTop: 12,
+            borderTop: '1px solid var(--border)',
+          }}
+        >
+          <label className={`chip ${dailyOn ? 'on' : ''}`} style={{ cursor: 'pointer' }}>
+            <input type="checkbox" checked={dailyOn} onChange={(e) => saveDaily(e.target.checked, dailyTime)} />
+            매일 자동 시작
+          </label>
+          <input
+            className="field"
+            type="time"
+            style={{ width: 130, padding: '7px 10px' }}
+            value={dailyTime}
+            onChange={(e) => saveDaily(dailyOn, e.target.value)}
+          />
+          <span className="muted" style={{ fontSize: 12.5, flex: '1 1 260px' }}>
+            이 시각(0~15분 랜덤)에 체크된 계정마다 로그인을 확인하고, <b>지금 이 화면 설정 그대로</b> 시작합니다. 하루 한 번 ·
+            앱이 켜져 있어야 함 · 로그인이 안 되는 계정은 빼고 진행
+          </span>
+          <button
+            className="btn sm"
+            onClick={dailyRunNow}
+            disabled={auto.running || dailyRunning}
+            title="예약 시각을 기다리지 않고 지금 한 번 같은 순서로 실행합니다 (로그인 확인 → 시작)"
+          >
+            {dailyRunning ? '로그인 확인 중…' : '지금 한 번 실행'}
+          </button>
+        </div>
         {auto.running && (
           <div style={{ marginTop: 14, display: 'flex', alignItems: 'center', gap: 10 }}>
             <span className="dot live" />

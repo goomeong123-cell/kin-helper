@@ -1001,12 +1001,11 @@ export function registerIpc(ipcMain: IpcMain) {
     return true;
   });
 
-  ipcMain.handle(
-    'auto:start',
-    async (
-      _e,
-      opts: { accountId?: number; accountIds?: number[]; submit: boolean; brandId?: number; useCollected?: boolean },
-    ) => {
+  type AutoOpts = { accountId?: number; accountIds?: number[]; submit: boolean; brandId?: number; useCollected?: boolean };
+  ipcMain.handle('auto:start', (_e, opts: AutoOpts) => startAutopilot(opts));
+
+  // 완전자동 시작 — [완전자동 시작] 버튼과 매일 자동 시작이 같은 경로를 쓴다
+  async function startAutopilot(opts: AutoOpts): Promise<{ ok: boolean; error?: string }> {
     if (foregroundBusy) return { ok: false, error: '로그인 또는 수동 작업을 먼저 마쳐주세요.' };
     if (autoRunning) return { ok: false, error: '이미 실행 중입니다.' };
     if (warmupBusy != null) return { ok: false, error: '워밍업 세션이 진행 중입니다. 몇 분 뒤 다시 시작하세요.' };
@@ -1053,7 +1052,91 @@ export function registerIpc(ipcMain: IpcMain) {
         autoRunning = false;
       });
     return { ok: true };
-  });
+  }
+
+  /* ---------- 매일 자동 시작 ----------
+   * 정해진 시각에: 작업 계정마다 [로그인] 버튼과 같은 동작(이미 로그인돼 있으면 비밀번호를 치지 않음)
+   * → 로그인된 계정으로, 질문·답변 탭의 완전자동 설정(저장된 값) 그대로 시작.
+   * 안전장치: 하루 한 번만(실패해도 그날은 다시 안 함 — 로그인 반복 시도 방지), 시각은 매일 0~15분 랜덤으로 늦춤,
+   *          앱이 늦게 켜졌으면 예정 시각 3시간 안까지만 실행, 로그인이 안 되는 계정은 빼고 진행. */
+  const setS = (k: string, v: string) =>
+    db()
+      .prepare(`INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
+      .run([k, v]);
+  let dailyTarget: { day: string; at: number } | null = null;
+
+  async function runDailyStart(): Promise<{ ok: boolean; error?: string }> {
+    if (autoRunning) return { ok: false, error: '이미 완전자동이 실행 중입니다.' };
+    if (foregroundBusy || warmupBusy != null) return { ok: false, error: '다른 브라우저 작업이 진행 중입니다.' };
+    const ids = String(getS('ui_auto_account_ids') || '')
+      .split(',')
+      .map(Number)
+      .filter((n) => Number.isFinite(n) && n > 0);
+    if (!ids.length) return { ok: false, error: '질문·답변 탭에서 작업 계정을 체크해 두세요.' };
+    const submit = getS('ui_auto_submit') === '1';
+    const useCollected = getS('ui_auto_tab') === 'collect';
+    const brandRaw = getS('ui_active_brand');
+    const brandId = brandRaw && brandRaw !== 'all' ? Number(brandRaw) : undefined;
+    pushLog(`⏰ 매일 자동 시작 — 계정 ${ids.length}개 로그인 확인 후 ${useCollected ? '수집 발행' : '완전자동'}(${submit ? '등록까지 자동' : '관전'}) 시작`);
+
+    const ready: number[] = [];
+    foregroundBusy = true;
+    try {
+      for (const id of ids) {
+        const a = db().prepare('SELECT * FROM accounts WHERE id = ?').get([id]) as any;
+        if (!a) continue;
+        if (!a.proxy_host || !a.proxy_port) {
+          pushLog(`[${a.naver_id}] 프록시 없음 — 제외`);
+          continue;
+        }
+        if (a.status === 'suspect') {
+          pushLog(`[${a.naver_id}] 정지의심 계정 — 제외`);
+          continue;
+        }
+        // [로그인] 버튼과 동일. 보안문자·추가인증이 뜨면 3분까지 창에서 마무리를 기다리고, 안 되면 이 계정은 뺀다.
+        const r = await loginWithRealChrome(
+          accountToProxy(a),
+          (m) => pushLog(`[${a.naver_id}] ${m}`),
+          decryptSecret(a.naver_pw) || undefined,
+          'login',
+          3 * 60 * 1000,
+        ).catch((e) => ({ ok: false, error: e instanceof Error ? e.message : String(e) }));
+        if (r.ok) ready.push(id);
+        else pushLog(`[${a.naver_id}] 로그인 안 됨 — 오늘 자동 작업에서 제외 (${r.error || '원인 미상'})`);
+        // 다음 계정 로그인 전에 창 정리 (닫을 때 세션 쿠키 저장됨) — 한 번에 창 하나
+        await closeAccountContext(id).catch(() => {});
+      }
+    } finally {
+      foregroundBusy = false;
+    }
+    if (!ready.length) {
+      pushLog('⏰ 로그인된 계정이 없어 오늘 자동 시작을 하지 않았습니다');
+      return { ok: false, error: '로그인된 계정이 없습니다.' };
+    }
+    const res = await startAutopilot({ accountIds: ready, submit, brandId, useCollected });
+    if (!res.ok) pushLog('⏰ 자동 시작 실패: ' + (res.error || ''));
+    return res;
+  }
+
+  setInterval(() => {
+    if (getS('daily_auto_enabled') !== '1') return;
+    if (autoRunning || foregroundBusy || warmupBusy != null) return;
+    const now = new Date();
+    const day = now.toDateString();
+    if (getS('daily_auto_last') === day) return;
+    if (!dailyTarget || dailyTarget.day !== day) {
+      const [h, m] = String(getS('daily_auto_time') || '09:00').split(':').map((x) => Number(x) || 0);
+      const t = new Date(now);
+      t.setHours(h, m, 0, 0);
+      dailyTarget = { day, at: t.getTime() + Math.random() * 15 * 60 * 1000 }; // 매일 같은 분에 시작하지 않게
+    }
+    const n = now.getTime();
+    if (n < dailyTarget.at || n > dailyTarget.at + 3 * 60 * 60 * 1000) return;
+    setS('daily_auto_last', day); // 먼저 표시 — 실패해도 그날은 다시 시도하지 않는다
+    void runDailyStart();
+  }, 60 * 1000);
+
+  ipcMain.handle('auto:dailyRunNow', () => runDailyStart());
 
   async function runAutopilot(accountIds: number[], submit: boolean, onlyBrandId?: number, useCollected?: boolean) {
     const ratio = Number(getS('promo_ratio') || '20');

@@ -87,6 +87,7 @@ const api = {
       useCollected?: boolean;
     }) => ipcRenderer.invoke('auto:start', opts),
     stop: () => ipcRenderer.invoke('auto:stop'),
+    dailyRunNow: () => ipcRenderer.invoke('auto:dailyRunNow'),
     next: () => ipcRenderer.invoke('auto:next'),
     status: () => ipcRenderer.invoke('auto:status'),
   },
