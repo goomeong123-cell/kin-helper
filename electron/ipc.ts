@@ -1,6 +1,6 @@
 import { app, BrowserWindow, type IpcMain } from 'electron';
 import { getDb } from './db';
-import { generateAnswer } from './claude';
+import { generateAnswer, judgeRelevance } from './claude';
 import {
   collectQuestions,
   fetchQuestionDetail,
@@ -1374,6 +1374,26 @@ export function registerIpc(ipcMain: IpcMain) {
         pushLog(
           `질문 확인: 제목 ${(preloaded.title || targetTitle || '').length}자 / 본문 ${(preloaded.body || '').length}자`,
         );
+      }
+      // 홍보 답변이면 먼저 연관성 판정 — 제품을 꺼내면 뜬금없는 질문은 건너뛴다(정상 건너뜀, 오류 아님).
+      // 기준은 느슨: 웬만하면 단다. 판정 자체가 실패하면(네트워크 등) 막지 않고 그대로 진행한다.
+      if (isPromo && brandId) {
+        const b = db().prepare('SELECT name, system_prompt FROM brands WHERE id=?').get([brandId]) as any;
+        const j = await judgeRelevance({
+          brandPrompt: String(b?.system_prompt || ''),
+          questionTitle: preloaded.title || targetTitle,
+          questionBody: preloaded.body || qrow?.content || '',
+        });
+        if (!j.ok) {
+          pushLog(`⚠ 연관성 판정 실패 — 판정 없이 진행 (${j.error})`);
+        } else if (!j.relevant) {
+          if (qrow?.id) db().prepare("UPDATE questions SET status='skipped' WHERE id=?").run([qrow.id]);
+          pushLog(`건너뜀(제품과 연관 낮음 · ${b?.name || ''}): ${String(targetTitle).slice(0, 24)} — ${j.reason || ''}`);
+          await sleepRnd(1500, 3000);
+          continue;
+        } else {
+          pushLog(`연관성 확인 ✓ ${j.reason ? '(' + j.reason + ')' : ''}`);
+        }
       }
       pushLog(`답변 생성 중: ${String(targetTitle).slice(0, 24)}`);
       const gen = (await doGenerate(

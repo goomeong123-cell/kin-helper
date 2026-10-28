@@ -29,6 +29,62 @@ export interface GenerateResult {
   error?: string;
 }
 
+/**
+ * 홍보 답변 전 연관성 판정 — 이 질문에 이 제품을 꺼내도 뜬금없지 않은가.
+ * 기준은 느슨하게(사용자 요청): 조금이라도 이어지면 YES, 누가 봐도 엉뚱한 광고가 될 때만 NO.
+ * 가장 싼 모델(Haiku 5.5)로 한 번 묻는다. 질문당 0.2원 안팎. (tests/relevance.mjs)
+ */
+export const RELEVANCE_MODEL = 'claude-haiku-5-5';
+export interface RelevanceResult {
+  ok: boolean;
+  relevant?: boolean;
+  reason?: string;
+  error?: string;
+}
+export function parseRelevance(text: string): RelevanceResult {
+  const lines = String(text || '').trim().split(/\r?\n/);
+  const m = /^\s*\**\s*(YES|NO)\b/i.exec(lines[0] || '');
+  if (!m) return { ok: false, error: `판정 응답을 읽지 못함: ${String(text).slice(0, 60)}` };
+  const reason = (lines.slice(1).join(' ').trim() || lines[0].replace(m[0], '').trim()).slice(0, 80);
+  return { ok: true, relevant: m[1].toUpperCase() === 'YES', reason };
+}
+export async function judgeRelevance(input: {
+  brandPrompt: string;
+  questionTitle: string;
+  questionBody: string;
+}): Promise<RelevanceResult> {
+  const apiKey = getSetting('claude_api_key');
+  if (!apiKey) return { ok: false, error: 'Claude API 키가 설정되지 않았습니다.' };
+  const system =
+    '너는 네이버 지식인 답변을 검토하는 사람이다. [제품 홍보 지시]에 나온 제품을 이 [질문]의 답변에서 언급해도 되는지 판단한다.\n' +
+    '기준은 느슨하게 잡는다. 질문 주제가 제품 분야와 조금이라도 이어지면(같은 피부 고민, 같은 신체 부위, 관리 방법, 관련 생활습관 등) YES.\n' +
+    '제품을 꺼내면 누가 봐도 뜬금없는 광고가 되는 경우에만 NO. (예: 화장품 홍보인데 게임, 법률, 자동차, 공부 질문)\n' +
+    '첫 줄에 YES 또는 NO 한 단어만 쓰고, 둘째 줄에 20자 이내로 이유를 쓴다.';
+  const user =
+    `[제품 홍보 지시]\n${input.brandPrompt.slice(0, 1500)}\n\n` +
+    `[질문 제목]\n${input.questionTitle}\n\n[질문 내용]\n${(input.questionBody || '(본문 없음)').slice(0, 1500)}`;
+  try {
+    const res = await fetch(API_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': ANTHROPIC_VERSION },
+      body: JSON.stringify({
+        model: RELEVANCE_MODEL,
+        max_tokens: 300,
+        thinking: { type: 'disabled' }, // 한 단어 분류라 생각 불필요 (Haiku 5.5 는 기본 effort medium 에서 허용)
+        system,
+        messages: [{ role: 'user', content: user }],
+      }),
+    });
+    if (!res.ok) return { ok: false, error: `Claude API 오류 (${res.status}): ${(await res.text()).slice(0, 200)}` };
+    const data = (await res.json()) as { content?: Array<{ type: string; text?: string }>; stop_reason?: string };
+    if (data.stop_reason === 'refusal') return { ok: false, error: '판정 모델이 응답을 거절함' };
+    const text = (data.content || []).filter((b) => b.type === 'text' && b.text).map((b) => b.text).join('');
+    return parseRelevance(text);
+  } catch (e: unknown) {
+    return { ok: false, error: `네트워크 오류: ${e instanceof Error ? e.message : String(e)}` };
+  }
+}
+
 /** 질문 하나에 대한 답변 초안 생성 */
 export async function generateAnswer(input: GenerateInput): Promise<GenerateResult> {
   const apiKey = getSetting('claude_api_key');
