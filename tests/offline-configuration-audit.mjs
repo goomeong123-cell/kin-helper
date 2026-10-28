@@ -23,7 +23,7 @@ try {
       args.path === 'electron' ? 'export const app={on(){},getVersion(){return "test"}}; export class BrowserWindow{}; export const session={}; export const clipboard={}; export const safeStorage={isEncryptionAvailable:()=>false};'
       : args.path === 'playwright' ? 'export const request=globalThis.__auditRequest; export const chromium={launchPersistentContext(){throw Error("Real browser launch forbidden in this audit")}};'
       : args.path === './db' ? 'export const getDb=()=>globalThis.__auditDb;'
-      : 'export function generateAnswer(){throw Error("API calls forbidden")}' }));
+      : 'export function generateAnswer(){throw Error("API calls forbidden")} export function judgeRelevance(){throw Error("API calls forbidden")}' }));
   } }] });
   const api = await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'));
   const account = { id: 1, naverId: 'synthetic', proxyHost: 'proxy.invalid', proxyPort: '1234', proxyUser: 'test', proxyPass: 'synthetic-only' };
